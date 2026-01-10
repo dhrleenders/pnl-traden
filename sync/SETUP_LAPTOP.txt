@@ -1,0 +1,7 @@
+1) Copy sync\.env.example to sync\.env and fill in your READ-ONLY Kraken Futures API key + secret.
+2) Install Python 3.10+.
+3) Open PowerShell in repo root and run:
+   powershell -ExecutionPolicy Bypass -File .\sync\publish_to_github.ps1
+
+Optional: schedule every 30 minutes:
+schtasks /Create /TN "PnL Publish" /TR "powershell -ExecutionPolicy Bypass -File C:\pnl-traden\sync\publish_to_github.ps1" /SC MINUTE /MO 30 /F
