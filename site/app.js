@@ -71,6 +71,10 @@ const els = {
   calcStop: document.getElementById("calcStop"),
   calcTP: document.getElementById("calcTP"),
   calcRisk: document.getElementById("calcRisk"),
+  calcBalance: document.getElementById("calcBalance"),
+  calcRiskPct: document.getElementById("calcRiskPct"),
+  calcUsePct: document.getElementById("calcUsePct"),
+  calcContractSize: document.getElementById("calcContractSize"),
   calcRiskCur: document.getElementById("calcRiskCur"),
   calcLev: document.getElementById("calcLev"),
   calcFeePct: document.getElementById("calcFeePct"),
@@ -649,7 +653,11 @@ function loadCalcDefaults(){
     if (els.calcEntry && o.entry !== undefined) els.calcEntry.value = o.entry;
     if (els.calcStop && o.stop !== undefined) els.calcStop.value = o.stop;
     if (els.calcTP && o.tp !== undefined) els.calcTP.value = o.tp;
+    if (els.calcBalance && o.balance !== undefined) els.calcBalance.value = o.balance;
+    if (els.calcRiskPct && o.riskPct !== undefined) els.calcRiskPct.value = o.riskPct;
+    if (els.calcUsePct && o.usePct !== undefined) els.calcUsePct.checked = !!o.usePct;
     if (els.calcRisk && o.risk !== undefined) els.calcRisk.value = o.risk;
+    if (els.calcContractSize && o.contractSize !== undefined) els.calcContractSize.value = o.contractSize;
     if (els.calcLev && o.lev !== undefined) els.calcLev.value = o.lev;
     if (els.calcFeePct && o.feePct !== undefined) els.calcFeePct.value = o.feePct;
   }catch{}
@@ -664,7 +672,11 @@ function saveCalcDefaults(){
       tp: els.calcTP?.value || "",
       risk: els.calcRisk?.value || "",
       lev: els.calcLev?.value || "1",
-      feePct: els.calcFeePct?.value || "0.08"
+      feePct: els.calcFeePct?.value || "0.08",
+      balance: els.calcBalance?.value || "",
+      riskPct: els.calcRiskPct?.value || "",
+      usePct: !!els.calcUsePct?.checked,
+      contractSize: els.calcContractSize?.value || "1"
     };
     localStorage.setItem(CALC_LS_KEY, JSON.stringify(o));
   }catch{}
@@ -688,13 +700,28 @@ function calcCompute(){
   const tpUsd = parseNumber(els.calcTP?.value || "");
   const lev = Math.max(1, parseNumber(els.calcLev?.value || "1") || 1);
   const feePct = Math.max(0, parseNumber(els.calcFeePct?.value || "0") || 0) / 100;
+  const contractSize = Math.max(0, parseNumber(els.calcContractSize?.value || "1") || 0) || 1;
 
-  // risk input is in selected currency; convert to USD for sizing
+  // Inputs are in selected currency (header). Convert to USD for sizing.
   const riskSelected = parseNumber(els.calcRisk?.value || "");
+  const balSelected = parseNumber(els.calcBalance?.value || "");
+  const riskPct = parseNumber(els.calcRiskPct?.value || "");
+  const usePct = !!els.calcUsePct?.checked;
+
   let riskUsd = riskSelected;
+  let balUsd = balSelected;
+
   if (state.currency === "EUR" && state.fx.usdToEur) {
-    // selected risk is EUR -> USD
     riskUsd = riskSelected / state.fx.usdToEur;
+    balUsd = balSelected / state.fx.usdToEur;
+  }
+
+  if (usePct) {
+    if (!balUsd || !riskPct) {
+      els.calcHint && (els.calcHint.textContent = "Vul balance + risk% in (of zet 'gebruik %' uit).");
+      return;
+    }
+    riskUsd = balUsd * (riskPct / 100);
   }
 
   if (!entryUsd || !stopUsd || !riskUsd) {
@@ -704,6 +731,7 @@ function calcCompute(){
     setKpiText(els.calcKpiMargin, "—", "Notional / leverage");
     setKpiText(els.calcKpiSL, "—", "Doel ≈ risico");
     setKpiText(els.calcKpiTP, "—", "RR: —");
+    els.calcKpiTP?.classList.remove("good","bad","warn");
     return;
   }
 
@@ -729,7 +757,12 @@ function calcCompute(){
   const stopPnlUsd = -perUnitRisk * qty - (notionalAdj * feePct * 2);
   const stopPnlSel = convertUsdToSelected(stopPnlUsd);
 
-  setKpiText(els.calcKpiQty, qty.toFixed(4), "Aantal contracts/coins");
+  const contracts = qty / contractSize;
+  const qtySub = contractSize === 1 ? "Aantal contracts/coins" : `Contract size: ${contractSize} (qty=${qty.toFixed(4)})`;
+  setKpiText(els.calcKpiQty, contracts.toFixed(4), contractSize === 1 ? "Aantal contracts/coins" : `Contracts (qty/contractSize)`);
+  if (contractSize !== 1) {
+    els.calcKpiQty?.querySelector(".sub") && (els.calcKpiQty.querySelector(".sub").textContent = `Underlying qty: ${qty.toFixed(4)} • Contract size: ${contractSize}`);
+  }
   setKpiText(els.calcKpiNotional, formatMoney(convertUsdToSelected(notionalAdj), convertedLabel()), "Entry × qty");
   setKpiText(els.calcKpiMargin, formatMoney(convertUsdToSelected(marginUsd), convertedLabel()), "Notional / leverage");
   setKpiText(els.calcKpiSL, formatMoney(stopPnlSel, convertedLabel()), "≈ -risico (incl. fees)");
@@ -740,9 +773,17 @@ function calcCompute(){
     const tpPnlUsd = perUnitGain * qty - (notionalAdj * feePct * 2);
     const rr = Math.abs(tpPnlUsd / stopPnlUsd);
     setKpiText(els.calcKpiTP, formatMoney(convertUsdToSelected(tpPnlUsd), convertedLabel()), `RR: ${isFinite(rr) ? rr.toFixed(2) : "—"}`);
+    // RR coloring: <2 red, 2-3 yellow, >3 green
+    els.calcKpiTP?.classList.remove("good","bad","warn");
+    if (isFinite(rr)) {
+      if (rr < 2) els.calcKpiTP?.classList.add("bad");
+      else if (rr < 3) els.calcKpiTP?.classList.add("warn");
+      else els.calcKpiTP?.classList.add("good");
+    }
     els.calcHint && (els.calcHint.textContent = "Ok.");
   } else {
     setKpiText(els.calcKpiTP, "—", "RR: —");
+    els.calcKpiTP?.classList.remove("good","bad","warn");
     els.calcHint && (els.calcHint.textContent = "Ok (TP leeg).");
   }
 }
@@ -761,6 +802,10 @@ function wireCalculator(){
     els.calcStop?.addEventListener(evt, onAny);
     els.calcTP?.addEventListener(evt, onAny);
     els.calcRisk?.addEventListener(evt, onAny);
+    els.calcBalance?.addEventListener(evt, onAny);
+    els.calcRiskPct?.addEventListener(evt, onAny);
+    els.calcUsePct?.addEventListener(evt, onAny);
+    els.calcContractSize?.addEventListener(evt, onAny);
     els.calcLev?.addEventListener(evt, onAny);
     els.calcFeePct?.addEventListener(evt, onAny);
   });
@@ -770,7 +815,11 @@ function wireCalculator(){
     if (els.calcEntry) els.calcEntry.value = "";
     if (els.calcStop) els.calcStop.value = "";
     if (els.calcTP) els.calcTP.value = "";
-    if (els.calcRisk) els.calcRisk.value = "";
+    if (els.calcBalance) els.calcBalance.value = "";
+    if (els.calcRiskPct) els.calcRiskPct.value = "";
+    if (els.calcUsePct) els.calcUsePct.checked = false;
+    if (els.calcRisk) els.calcRisk.value = ""; 
+    if (els.calcContractSize) els.calcContractSize.value = "1";
     if (els.calcLev) els.calcLev.value = "1";
     if (els.calcFeePct) els.calcFeePct.value = "0.08";
     saveCalcDefaults();

@@ -32,6 +32,7 @@
     .kpi .sub{color:var(--muted);font-size:12px}
     .kpi.good .value{color:var(--accent)}
     .kpi.bad .value{color:var(--danger)}
+    .kpi.warn .value{color:#fbbf24}
     .two{grid-column:span 12}
     @media (min-width:900px){
       .two{grid-column:span 6}
@@ -266,11 +267,33 @@
             </div>
 
             <div class="row">
+              <label class="lbl">Balance</label>
+              <input id="calcBalance" class="in mono" inputmode="decimal" placeholder="bijv. 5000" />
+            </div>
+
+            <div class="row">
+              <label class="lbl">Risk % van balance</label>
+              <div style="display:flex;gap:8px;align-items:center;flex:1">
+                <input id="calcRiskPct" class="in mono" inputmode="decimal" placeholder="bijv. 1" style="flex:1" />
+                <span class="badge">%</span>
+                <label class="badge" style="display:flex;gap:6px;align-items:center">
+                  <input id="calcUsePct" type="checkbox" style="accent-color:#22c55e" />
+                  gebruik %
+                </label>
+              </div>
+            </div>
+
+            <div class="row">
               <label class="lbl">Risico per trade</label>
               <div style="display:flex;gap:8px;align-items:center;flex:1">
                 <input id="calcRisk" class="in mono" inputmode="decimal" placeholder="bijv. 50" style="flex:1" />
                 <span class="badge" id="calcRiskCur">USD</span>
               </div>
+            </div>
+
+            <div class="row">
+              <label class="lbl">Contract size</label>
+              <input id="calcContractSize" class="in mono" inputmode="decimal" value="1" />
             </div>
 
             <div class="row">
