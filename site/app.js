@@ -42,6 +42,7 @@ const els = {
     dash: document.getElementById("view-dash"),
     monthly: document.getElementById("view-monthly"),
     trades: document.getElementById("view-trades"),
+    calc: document.getElementById("view-calc"),
     import: document.getElementById("view-import")
   },
 
@@ -62,6 +63,25 @@ const els = {
   importStatus: document.getElementById("importStatus"),
   loadSamplesBtn: document.getElementById("loadSamplesBtn"),
   sampleStatus: document.getElementById("sampleStatus")
+
+,
+  // Calculator
+  calcSide: document.getElementById("calcSide"),
+  calcEntry: document.getElementById("calcEntry"),
+  calcStop: document.getElementById("calcStop"),
+  calcTP: document.getElementById("calcTP"),
+  calcRisk: document.getElementById("calcRisk"),
+  calcRiskCur: document.getElementById("calcRiskCur"),
+  calcLev: document.getElementById("calcLev"),
+  calcFeePct: document.getElementById("calcFeePct"),
+  calcResetBtn: document.getElementById("calcResetBtn"),
+  calcHint: document.getElementById("calcHint"),
+
+  calcKpiQty: document.getElementById("calcKpiQty"),
+  calcKpiNotional: document.getElementById("calcKpiNotional"),
+  calcKpiMargin: document.getElementById("calcKpiMargin"),
+  calcKpiSL: document.getElementById("calcKpiSL"),
+  calcKpiTP: document.getElementById("calcKpiTP")
 };
 
 function safeText(s){ return (s ?? "").toString(); }
@@ -263,7 +283,7 @@ function normalizeKrakenFuturesAccountLog(objs){
 // ---------- API JSON ingest ----------
 function normalizeApiRows(data){
   if (Array.isArray(data?.rows)) {
-    return data.rows.map(r => ({
+    const out = data.rows.map(r => ({
       datetime: safeText(r.datetime),
       exchange: safeText(r.exchange || "KRAKEN"),
       symbol: safeText(r.symbol),
@@ -277,7 +297,15 @@ function normalizeApiRows(data){
       netPnlUsd: Number(r.netPnlUsd ?? (Number(r.realizedPnlUsd||0) - Number(r.feesUsd||0) + Number(r.fundingUsd||0))),
       notes: safeText(r.notes || ""),
       tradeKey: safeText(r.tradeKey || "")
-    })).filter(x => x.datetime && x.tradeKey);
+        }));
+    // Ensure tradeKey exists (some exports may omit it)
+    for (let i=0;i<out.length;i++){
+      if(!out[i].tradeKey){
+        out[i].tradeKey = `${out[i].exchange}|${out[i].symbol}|${out[i].datetime}|${out[i].netPnlUsd}|${i}`;
+      }
+    }
+    return out.filter(x => x.datetime);
+
   }
   // legacy support: closed_trades
   const out=[];
@@ -309,11 +337,30 @@ function normalizeApiRows(data){
 }
 
 async function upsertTrades(rows){
+  // Ensure every row has a stable tradeKey so we never drop everything on mobile due to missing keys.
+  const normalized = rows.map((r, idx) => {
+    let tk = safeText(r.tradeKey || "");
+    if (!tk) {
+      // Fallback key based on deterministic fields
+      tk = [
+        safeText(r.exchange||""),
+        safeText(r.marketType||""),
+        safeText(r.symbol||""),
+        safeText(r.datetime||""),
+        String(Number(r.netPnlUsd||0)),
+        String(Number(r.feesUsd||0)),
+        String(Number(r.fundingUsd||0)),
+        String(idx)
+      ].join("|");
+    }
+    return { ...r, tradeKey: tk };
+  });
+
   const existing = await db.trades.toArray();
   const keySet = new Set(existing.map(x=>x.tradeKey));
-  const toAdd = rows.filter(r=>r.tradeKey && !keySet.has(r.tradeKey));
+  const toAdd = normalized.filter(r=>r.tradeKey && !keySet.has(r.tradeKey));
   if (toAdd.length) await db.trades.bulkAdd(toAdd);
-  return { added: toAdd.length, skipped: rows.length - toAdd.length };
+  return { added: toAdd.length, skipped: normalized.length - toAdd.length };
 }
 
 async function syncFromApiIntoDb(){
@@ -323,8 +370,9 @@ async function syncFromApiIntoDb(){
     const data = await res.json();
     const rows = normalizeApiRows(data);
     const r = await upsertTrades(rows);
-    els.dbBadge.textContent = `Sync OK (+${r.added})`;
-    return { ok:true, ...r };
+    const total = await db.trades.count();
+    els.dbBadge.textContent = `Sync OK (+${r.added}) • totaal ${total}`;
+    return { ok:true, total, ...r };
   }catch(e){
     els.dbBadge.textContent = "Sync offline";
     return { ok:false, err:String(e?.message||e) };
@@ -588,6 +636,147 @@ async function renderAll(){
   }).join("");
 }
 
+
+// ---------- Calculator ----------
+const CALC_LS_KEY = "pnl_calc_v1";
+
+function loadCalcDefaults(){
+  try{
+    const raw = localStorage.getItem(CALC_LS_KEY);
+    if(!raw) return;
+    const o = JSON.parse(raw);
+    if (els.calcSide && o.side) els.calcSide.value = o.side;
+    if (els.calcEntry && o.entry !== undefined) els.calcEntry.value = o.entry;
+    if (els.calcStop && o.stop !== undefined) els.calcStop.value = o.stop;
+    if (els.calcTP && o.tp !== undefined) els.calcTP.value = o.tp;
+    if (els.calcRisk && o.risk !== undefined) els.calcRisk.value = o.risk;
+    if (els.calcLev && o.lev !== undefined) els.calcLev.value = o.lev;
+    if (els.calcFeePct && o.feePct !== undefined) els.calcFeePct.value = o.feePct;
+  }catch{}
+}
+
+function saveCalcDefaults(){
+  try{
+    const o = {
+      side: els.calcSide?.value || "LONG",
+      entry: els.calcEntry?.value || "",
+      stop: els.calcStop?.value || "",
+      tp: els.calcTP?.value || "",
+      risk: els.calcRisk?.value || "",
+      lev: els.calcLev?.value || "1",
+      feePct: els.calcFeePct?.value || "0.08"
+    };
+    localStorage.setItem(CALC_LS_KEY, JSON.stringify(o));
+  }catch{}
+}
+
+function setKpiText(kpiEl, valueText, subText){
+  if(!kpiEl) return;
+  kpiEl.querySelector(".value").textContent = valueText;
+  if (subText !== undefined) kpiEl.querySelector(".sub").textContent = subText;
+}
+
+function calcCompute(){
+  if(!els.calcEntry) return;
+
+  // risk currency badge follows selected currency in header
+  if (els.calcRiskCur) els.calcRiskCur.textContent = state.currency;
+
+  const side = (els.calcSide?.value || "LONG").toUpperCase();
+  const entryUsd = parseNumber(els.calcEntry.value);
+  const stopUsd = parseNumber(els.calcStop.value);
+  const tpUsd = parseNumber(els.calcTP?.value || "");
+  const lev = Math.max(1, parseNumber(els.calcLev?.value || "1") || 1);
+  const feePct = Math.max(0, parseNumber(els.calcFeePct?.value || "0") || 0) / 100;
+
+  // risk input is in selected currency; convert to USD for sizing
+  const riskSelected = parseNumber(els.calcRisk?.value || "");
+  let riskUsd = riskSelected;
+  if (state.currency === "EUR" && state.fx.usdToEur) {
+    // selected risk is EUR -> USD
+    riskUsd = riskSelected / state.fx.usdToEur;
+  }
+
+  if (!entryUsd || !stopUsd || !riskUsd) {
+    els.calcHint && (els.calcHint.textContent = "Vul entry, stop en risico in.");
+    setKpiText(els.calcKpiQty, "—", "Aantal contracts/coins");
+    setKpiText(els.calcKpiNotional, "—", "Entry × qty");
+    setKpiText(els.calcKpiMargin, "—", "Notional / leverage");
+    setKpiText(els.calcKpiSL, "—", "Doel ≈ risico");
+    setKpiText(els.calcKpiTP, "—", "RR: —");
+    return;
+  }
+
+  const perUnitRisk = Math.abs(entryUsd - stopUsd);
+  if (perUnitRisk <= 0) {
+    els.calcHint && (els.calcHint.textContent = "Stop mag niet gelijk zijn aan entry.");
+    return;
+  }
+
+  // qty to match risk (excluding fees first)
+  let qty = riskUsd / perUnitRisk;
+
+  // fees: approximate round-trip fees on notional (entry and exit)
+  const notional = entryUsd * qty;
+  const feesUsd = (notional * feePct) * 2; // entry + exit
+  // adjust qty so that (perUnitRisk*qty + fees) ~= riskUsd
+  // qty*(perUnitRisk + entryUsd*feePct*2) = riskUsd
+  qty = riskUsd / (perUnitRisk + entryUsd * feePct * 2);
+
+  const notionalAdj = entryUsd * qty;
+  const marginUsd = notionalAdj / lev;
+
+  const stopPnlUsd = -perUnitRisk * qty - (notionalAdj * feePct * 2);
+  const stopPnlSel = convertUsdToSelected(stopPnlUsd);
+
+  setKpiText(els.calcKpiQty, qty.toFixed(4), "Aantal contracts/coins");
+  setKpiText(els.calcKpiNotional, formatMoney(convertUsdToSelected(notionalAdj), convertedLabel()), "Entry × qty");
+  setKpiText(els.calcKpiMargin, formatMoney(convertUsdToSelected(marginUsd), convertedLabel()), "Notional / leverage");
+  setKpiText(els.calcKpiSL, formatMoney(stopPnlSel, convertedLabel()), "≈ -risico (incl. fees)");
+
+  // TP / RR
+  if (tpUsd) {
+    const perUnitGain = Math.abs(tpUsd - entryUsd);
+    const tpPnlUsd = perUnitGain * qty - (notionalAdj * feePct * 2);
+    const rr = Math.abs(tpPnlUsd / stopPnlUsd);
+    setKpiText(els.calcKpiTP, formatMoney(convertUsdToSelected(tpPnlUsd), convertedLabel()), `RR: ${isFinite(rr) ? rr.toFixed(2) : "—"}`);
+    els.calcHint && (els.calcHint.textContent = "Ok.");
+  } else {
+    setKpiText(els.calcKpiTP, "—", "RR: —");
+    els.calcHint && (els.calcHint.textContent = "Ok (TP leeg).");
+  }
+}
+
+function wireCalculator(){
+  if(!els.calcEntry) return;
+
+  loadCalcDefaults();
+  calcCompute();
+
+  const onAny = () => { saveCalcDefaults(); calcCompute(); };
+
+  ["change","input"].forEach(evt => {
+    els.calcSide?.addEventListener(evt, onAny);
+    els.calcEntry?.addEventListener(evt, onAny);
+    els.calcStop?.addEventListener(evt, onAny);
+    els.calcTP?.addEventListener(evt, onAny);
+    els.calcRisk?.addEventListener(evt, onAny);
+    els.calcLev?.addEventListener(evt, onAny);
+    els.calcFeePct?.addEventListener(evt, onAny);
+  });
+
+  els.calcResetBtn?.addEventListener("click", () => {
+    if (els.calcSide) els.calcSide.value = "LONG";
+    if (els.calcEntry) els.calcEntry.value = "";
+    if (els.calcStop) els.calcStop.value = "";
+    if (els.calcTP) els.calcTP.value = "";
+    if (els.calcRisk) els.calcRisk.value = "";
+    if (els.calcLev) els.calcLev.value = "1";
+    if (els.calcFeePct) els.calcFeePct.value = "0.08";
+    saveCalcDefaults();
+    calcCompute();
+  });
+}
 // ---------- Events ----------
 function setActiveTab(tab){
   for(const el of [...els.tabs.querySelectorAll(".tab")]) el.classList.toggle("active", el.dataset.tab===tab);
@@ -597,7 +786,7 @@ els.tabs.addEventListener("click",(e)=>{
   const t=e.target.closest(".tab"); if(!t) return;
   setActiveTab(t.dataset.tab);
 });
-els.currency.addEventListener("change", async()=>{ state.currency=els.currency.value; await renderAll(); });
+els.currency.addEventListener("change", async()=>{ state.currency=els.currency.value; await renderAll(); calcCompute(); });
 els.exchange.addEventListener("change", async()=>{ state.exchange=els.exchange.value; await renderAll(); });
 els.marketType.addEventListener("change", async()=>{ state.marketType=els.marketType.value; await renderAll(); });
 els.range.addEventListener("change", async()=>{ state.range=els.range.value; await renderAll(); });
@@ -666,6 +855,8 @@ els.resetBtn.addEventListener("click", async()=>{
   state.exchange=els.exchange.value;
   state.marketType=els.marketType.value;
   state.range=els.range.value;
+
+  wireCalculator();
 
   // first sync + render
   await syncFromApiIntoDb();

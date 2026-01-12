@@ -1,62 +1,61 @@
-// Simple service worker for PnL Traden
-// - Cache app shell for offline use
-// - Network-first for /data/pnl.json (so you see latest), with cache fallback
+// sw.js — PnL Traden
+// Auto-update + clean old caches.
+// IMPORTANT: never cache /data/pnl.json (always fetch latest).
 
-const CACHE = "pnl-traden-v1.0.0";
-const APP_SHELL = [
+const CACHE_VERSION = "v1_4_2";
+const STATIC_CACHE = `pnl-static-${CACHE_VERSION}`;
+
+const STATIC_ASSETS = [
   "./",
   "./index.html",
   "./app.js",
   "./manifest.json",
   "./icon-192.png",
-  "./icon-512.png",
-  "./data/pnl.json"
+  "./icon-512.png"
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil((async () => {
-    const cache = await caches.open(CACHE);
-    await cache.addAll(APP_SHELL);
-    self.skipWaiting();
-  })());
+  self.skipWaiting();
+  event.waitUntil(
+    caches.open(STATIC_CACHE).then((cache) => cache.addAll(STATIC_ASSETS)).catch(() => {})
+  );
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(keys.map(k => (k === CACHE ? null : caches.delete(k))));
-    self.clients.claim();
+    await Promise.all(keys.map((k) => (k.startsWith("pnl-static-") && k !== STATIC_CACHE) ? caches.delete(k) : Promise.resolve()));
+    await self.clients.claim();
   })());
 });
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
-  // Network-first for the data file
+  // Always fetch latest data (no cache)
   if (url.pathname.endsWith("/data/pnl.json")) {
-    event.respondWith((async () => {
-      try {
-        const res = await fetch(event.request, { cache: "no-store" });
-        const cache = await caches.open(CACHE);
-        cache.put(event.request, res.clone());
-        return res;
-      } catch {
-        const cached = await caches.match(event.request);
-        return cached || new Response(JSON.stringify({ rows: [], generated_at: null }), {
-          headers: { "Content-Type": "application/json" }
-        });
-      }
-    })());
+    event.respondWith(fetch(event.request, { cache: "no-store" }));
     return;
   }
 
   // Cache-first for app shell
   event.respondWith((async () => {
-    const cached = await caches.match(event.request);
+    const cache = await caches.open(STATIC_CACHE);
+    const cached = await cache.match(event.request);
     if (cached) return cached;
-    const res = await fetch(event.request);
-    const cache = await caches.open(CACHE);
-    cache.put(event.request, res.clone());
-    return res;
+
+    try {
+      const fresh = await fetch(event.request);
+      if (event.request.method === "GET" && url.origin === location.origin) {
+        cache.put(event.request, fresh.clone());
+      }
+      return fresh;
+    } catch (e) {
+      if (event.request.mode === "navigate") {
+        const index = await cache.match("./index.html");
+        if (index) return index;
+      }
+      throw e;
+    }
   })());
 });
