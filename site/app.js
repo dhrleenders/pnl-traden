@@ -688,6 +688,35 @@ function setKpiText(kpiEl, valueText, subText){
   if (subText !== undefined) kpiEl.querySelector(".sub").textContent = subText;
 }
 
+function fmtInputNumber(n, decimals=8){
+  if(n === null || n === undefined || !isFinite(n)) return "";
+  const s = Number(n).toFixed(decimals);
+  return s.replace(/\.0+$/,'').replace(/(\.\d*?)0+$/,'$1');
+}
+
+function convertAmountBetweenCurrencies(amount, fromCur, toCur){
+  const r = state.fx.usdToEur;
+  if(!r) return amount;
+  if(fromCur === toCur) return amount;
+  if(fromCur === "USD" && toCur === "EUR") return amount * r;
+  if(fromCur === "EUR" && toCur === "USD") return amount / r;
+  return amount;
+}
+
+// When switching USD/EUR, keep underlying USD value constant by converting the input fields.
+function convertCalculatorInputs(prevCur, nextCur){
+  if(!state.fx.usdToEur) return;
+  const fields = [els.calcEntry, els.calcStop, els.calcTP, els.calcRisk, els.calcBalance];
+  for(const el of fields){
+    if(!el) continue;
+    const v = parseNumber(el.value);
+    if(!v) continue;
+    const converted = convertAmountBetweenCurrencies(v, prevCur, nextCur);
+    const dec = (el === els.calcRisk || el === els.calcBalance) ? 2 : 8;
+    el.value = fmtInputNumber(converted, dec);
+  }
+}
+
 function calcCompute(){
   if(!els.calcEntry) return;
 
@@ -695,9 +724,21 @@ function calcCompute(){
   if (els.calcRiskCur) els.calcRiskCur.textContent = state.currency;
 
   const side = (els.calcSide?.value || "LONG").toUpperCase();
-  const entryUsd = parseNumber(els.calcEntry.value);
-  const stopUsd = parseNumber(els.calcStop.value);
-  const tpUsd = parseNumber(els.calcTP?.value || "");
+
+  // Calculator inputs follow the selected currency (USD/EUR)
+  const entrySelected = parseNumber(els.calcEntry.value);
+  const stopSelected = parseNumber(els.calcStop.value);
+  const tpSelected = parseNumber(els.calcTP?.value || "");
+
+  let entryUsd = entrySelected;
+  let stopUsd  = stopSelected;
+  let tpUsd    = tpSelected;
+
+  if (state.currency === "EUR" && state.fx.usdToEur) {
+    entryUsd = entrySelected / state.fx.usdToEur;
+    stopUsd  = stopSelected  / state.fx.usdToEur;
+    tpUsd    = tpSelected    / state.fx.usdToEur;
+  }
   const lev = Math.max(1, parseNumber(els.calcLev?.value || "1") || 1);
   const feePct = Math.max(0, parseNumber(els.calcFeePct?.value || "0") || 0) / 100;
   const contractSize = Math.max(0, parseNumber(els.calcContractSize?.value || "1") || 0) || 1;
@@ -835,7 +876,7 @@ els.tabs.addEventListener("click",(e)=>{
   const t=e.target.closest(".tab"); if(!t) return;
   setActiveTab(t.dataset.tab);
 });
-els.currency.addEventListener("change", async()=>{ state.currency=els.currency.value; await renderAll(); calcCompute(); });
+els.currency.addEventListener("change", async()=>{ const prev=state.currency; const next=els.currency.value; convertCalculatorInputs(prev, next); state.currency=next; await renderAll(); calcCompute(); });
 els.exchange.addEventListener("change", async()=>{ state.exchange=els.exchange.value; await renderAll(); });
 els.marketType.addEventListener("change", async()=>{ state.marketType=els.marketType.value; await renderAll(); });
 els.range.addEventListener("change", async()=>{ state.range=els.range.value; await renderAll(); });
