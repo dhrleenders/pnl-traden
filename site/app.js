@@ -1,77 +1,122 @@
 /* ============================================================
-   PnL Traden — FIXED app.js (Kraken Futures Account Log + JSON sync)
-   - Auto-load latest /data/pnl.json (Netlify/GitHub pages)
-   - Import CSV: Kraken Futures Account Log (exact headers you showed)
-   - Shows Realized PnL / Fees / Funding / Net in UI + charts
+   PnL Traden — PWA (Netlify-ready)
+   - Live data: reads /data/pnl.json (synced by your laptop script)
+   - Accurate PnL: CSV import (Kraken Futures account log / Blofin order history / Kraken trades.csv)
    ============================================================ */
 
-/* global Dexie */
-
-const DATA_URL = "/data/pnl.json";         // Netlify: https://<site>.netlify.app/data/pnl.json
+const DATA_URL = "/data/pnl.json";        // ✅ Netlify path
 const REFRESH_MS = 30_000;
 const FX_CACHE_KEY = "pnl_fx_cache_v1";
 
+// Dexie (IndexedDB)
 const db = new Dexie("pnl_traden_db");
 db.version(2).stores({
   trades: "++id, tradeKey, datetime, exchange, symbol, marketType, side, netPnlUsd"
 });
 
+// ---------- state ----------
 const state = {
   fx: { usdToEur: null, asOf: null },
   currency: "USD",
   exchange: "ALL",
   marketType: "ALL",
   range: "12m",
-  search: ""
+  search: "",
+  live: {
+    ok: false,
+    synced_at: null,
+    fills: [],
+    openPositions: [],
+    accounts: {}
+  },
+  chartMode: "equity" // "equity" or "value" (later)
 };
 
+// ---------- DOM ----------
 const els = {
   currency: document.getElementById("currency"),
   exchange: document.getElementById("exchange"),
   marketType: document.getElementById("marketType"),
   range: document.getElementById("range"),
-  summaryLine: document.getElementById("summaryLine"),
+  search: document.getElementById("search"),
+
   fxBadge: document.getElementById("fxBadge"),
-  dbBadge: document.getElementById("dbBadge"),
-  exportBtn: document.getElementById("exportBtn"),
-  resetBtn: document.getElementById("resetBtn"),
+  syncBadge: document.getElementById("syncBadge") || document.getElementById("dbBadge"), // fallback
+  countBadge: document.getElementById("countBadge"),
 
   tabs: document.getElementById("tabs"),
   views: {
     dash: document.getElementById("view-dash"),
     monthly: document.getElementById("view-monthly"),
     trades: document.getElementById("view-trades"),
-    import: document.getElementById("view-import")
+    import: document.getElementById("view-import"),
+    live: document.getElementById("view-live") // may not exist yet
   },
 
   kpiNet: document.getElementById("kpiNet"),
   kpiFees: document.getElementById("kpiFees"),
   kpiWinrate: document.getElementById("kpiWinrate"),
-  countBadge: document.getElementById("countBadge"),
+
   equityCanvas: document.getElementById("equityCanvas"),
   monthlyCanvas: document.getElementById("monthlyCanvas"),
   monthlyHint: document.getElementById("monthlyHint"),
 
-  search: document.getElementById("search"),
   tradeRows: document.getElementById("tradeRows"),
   tradeCount: document.getElementById("tradeCount"),
 
   fileInput: document.getElementById("fileInput"),
   importBtn: document.getElementById("importBtn"),
   importStatus: document.getElementById("importStatus"),
-  loadSamplesBtn: document.getElementById("loadSamplesBtn"),
-  sampleStatus: document.getElementById("sampleStatus")
+
+  exportBtn: document.getElementById("exportBtn"),
+  resetBtn: document.getElementById("resetBtn")
 };
 
-// ----------------- Utils -----------------
-function safeText(s) { return (s ?? "").toString(); }
+// If your HTML doesn't have a Live tab/view yet, we create a simple section inside dashboard
+function ensureLiveContainer() {
+  let box = document.getElementById("liveBox");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "liveBox";
+    box.className = "card";
+    box.style.marginTop = "16px";
+    box.innerHTML = `
+      <div class="cardHeader">
+        <div class="cardTitle">Live (API snapshot)</div>
+        <div class="cardSub muted">Open posities + accounts. Realized PnL blijft via CSV import.</div>
+      </div>
+      <div class="cardBody">
+        <div id="liveMeta" class="muted" style="margin-bottom:10px;"></div>
+        <div style="display:grid;grid-template-columns:1fr;gap:14px;">
+          <div>
+            <div class="muted" style="margin-bottom:6px;">Open positions</div>
+            <div class="tableWrap"><table class="table"><thead>
+              <tr><th>Symbol</th><th>Side</th><th class="right">Size</th><th class="right">Price</th><th class="right">UnrealizedFunding</th></tr>
+            </thead><tbody id="livePositionsRows"></tbody></table></div>
+          </div>
+          <div>
+            <div class="muted" style="margin-bottom:6px;">Accounts (snapshot)</div>
+            <div class="tableWrap"><table class="table"><thead>
+              <tr><th>Key</th><th class="right">Balance</th></tr>
+            </thead><tbody id="liveAccountsRows"></tbody></table></div>
+          </div>
+        </div>
+      </div>
+    `;
+    // place under dashboard view
+    const dash = document.getElementById("view-dash") || document.body;
+    dash.appendChild(box);
+  }
+  return box;
+}
 
+// ---------- utils ----------
 function parseNumber(x) {
   if (x === null || x === undefined) return 0;
   if (typeof x === "number") return isFinite(x) ? x : 0;
   let s = String(x).trim();
   if (!s || s === "--") return 0;
-  s = s.replace(/^﻿/, ""); // BOM
+  s = s.replace(/^﻿/, "");
   const m = s.match(/-?[0-9][0-9.,]*/);
   if (!m) return 0;
   let token = m[0];
@@ -82,99 +127,122 @@ function parseNumber(x) {
 }
 
 function formatMoney(amount, currency) {
-  return new Intl.NumberFormat("nl-NL", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 2
-  }).format(amount);
+  const fmt = new Intl.NumberFormat("nl-NL", { style: "currency", currency, maximumFractionDigits: 2 });
+  return fmt.format(amount || 0);
 }
-
 function formatPct(x) {
-  return new Intl.NumberFormat("nl-NL", {
-    style: "percent",
-    maximumFractionDigits: 1
-  }).format(x);
+  const fmt = new Intl.NumberFormat("nl-NL", { style: "percent", maximumFractionDigits: 1 });
+  return fmt.format(x || 0);
 }
-
 function pnlClass(x) { return x >= 0 ? "pos" : "neg"; }
-
-function convertUsdToSelected(usd) {
-  if (state.currency === "USD") return usd;
-  const r = state.fx.usdToEur;
-  return r ? usd * r : usd;
-}
-function convertedLabel() { return state.currency; }
-
-// Kraken Futures Account Log datetime sometimes is like: 11/Jan/2026 21:24:14
-function parseKrakenFuturesDateTime(dtStrRaw) {
-  const s = safeText(dtStrRaw).trim();
-  if (!s) return null;
-
-  // If it's already ISO-ish, let Date handle it
-  if (s.includes("T")) {
-    const d = new Date(s.endsWith("Z") ? s : (s + "Z"));
-    return isNaN(d.getTime()) ? null : d.toISOString();
-  }
-
-  // Format: DD/Mon/YYYY HH:mm:ss
-  const m = s.match(/^(\d{1,2})\/([A-Za-z]{3})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/);
-  if (!m) {
-    const d2 = new Date(s);
-    return isNaN(d2.getTime()) ? null : d2.toISOString();
-  }
-  const dd = Number(m[1]);
-  const mon = m[2].toLowerCase();
-  const yyyy = Number(m[3]);
-  const HH = Number(m[4]);
-  const MM = Number(m[5]);
-  const SS = Number(m[6]);
-
-  const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
-  const mo = months[mon];
-  if (mo === undefined) return null;
-
-  // Kraken futures history timestamps are effectively UTC for our use; store as UTC ISO.
-  const d = new Date(Date.UTC(yyyy, mo, dd, HH, MM, SS));
-  return d.toISOString();
-}
 
 function rangeCutoffIso(range, nowRef) {
   const now = nowRef instanceof Date ? nowRef : new Date();
   if (range === "all") return null;
-  const mapDays = {
-    "24h": 1, "1w": 7, "2w": 14, "7d": 7,
-    "1m": 30, "30d": 30, "3m": 90, "6m": 182,
-    "1y": 365, "12m": 365
-  };
+  const mapDays = { "24h": 1, "1w": 7, "2w": 14, "7d": 7, "1m": 30, "30d": 30, "3m": 90, "6m": 182, "1y": 365, "12m": 365 };
   const days = mapDays[range] ?? 365;
-  const cutoff = new Date(now.getTime() - days * 24 * 3600 * 1000);
-  return cutoff.toISOString();
+  return new Date(now.getTime() - days * 86400000).toISOString();
 }
 
-// ----------------- FX -----------------
+function convertUsdToSelected(usd) {
+  if (state.currency === "USD") return usd;
+  const r = state.fx.usdToEur;
+  if (!r) return usd;
+  return usd * r;
+}
+function convertedLabel() { return state.currency; }
+
+// ---------- FX ----------
 async function fetchFxRate() {
   const cached = localStorage.getItem(FX_CACHE_KEY);
   if (cached) {
     try { state.fx = JSON.parse(cached) || state.fx; } catch {}
   }
-
   try {
     const res = await fetch("https://api.exchangerate.host/latest?base=USD&symbols=EUR");
     if (!res.ok) throw new Error("FX fetch failed");
     const data = await res.json();
     const rate = data?.rates?.EUR;
     if (rate) {
-      state.fx = { usdToEur: rate, asOf: data?.date || new Date().toISOString().slice(0, 10) };
+      state.fx = { usdToEur: rate, asOf: data?.date || new Date().toISOString().slice(0,10) };
       localStorage.setItem(FX_CACHE_KEY, JSON.stringify(state.fx));
     }
   } catch {}
-
-  els.fxBadge.textContent = state.fx.usdToEur
-    ? `FX: 1 USD = ${state.fx.usdToEur.toFixed(4)} EUR (${state.fx.asOf})`
-    : "FX: offline";
+  if (els.fxBadge) {
+    els.fxBadge.textContent = state.fx.usdToEur
+      ? `FX: 1 USD = ${state.fx.usdToEur.toFixed(4)} EUR (${state.fx.asOf})`
+      : "FX: offline";
+  }
 }
 
-// ----------------- CSV parsing -----------------
+// ---------- remote pnl.json loader ----------
+async function fetchLiveJson() {
+  try {
+    const res = await fetch(`${DATA_URL}?t=${Date.now()}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const j = await res.json();
+    // Accept multiple shapes:
+    // A) { generated_at, rows:[...] }
+    // B) { synced_at, ok, data:{ fills:{fills:[]}, openPositions:[], accounts:{} } }
+    // C) { synced_at, ok, rows:[...] } etc
+
+    state.live.ok = !!(j.ok ?? true);
+    state.live.synced_at = j.synced_at || j.generated_at || null;
+
+    // rows can exist at top level
+    const rows = Array.isArray(j.rows) ? j.rows : null;
+
+    // fills/openPositions/accounts may exist nested
+    const fills = j?.data?.fills?.fills || j?.fills || [];
+    const openPositions = j?.data?.openPositions || j?.openPositions || [];
+    const accounts = j?.data?.accounts || j?.accounts || {};
+
+    state.live.fills = Array.isArray(fills) ? fills : [];
+    state.live.openPositions = Array.isArray(openPositions) ? openPositions : [];
+    state.live.accounts = accounts && typeof accounts === "object" ? accounts : {};
+
+    // If rows exist, ingest them (this is the “best” case)
+    if (rows && rows.length) {
+      await upsertTrades(rows.map(sanitizeRow));
+      if (els.syncBadge) els.syncBadge.textContent = `Sync OK (+${rows.length})`;
+    } else {
+      // no rows (normal if you only synced fills/accounts)
+      if (els.syncBadge) els.syncBadge.textContent = `Sync OK (+0)`;
+    }
+  } catch (e) {
+    if (els.syncBadge) els.syncBadge.textContent = "Sync: offline/failed";
+  }
+}
+
+// Make sure row has required keys
+function sanitizeRow(r) {
+  const out = { ...r };
+  out.tradeKey = String(out.tradeKey || `${out.exchange||"X"}|${out.datetime||Date.now()}|${out.symbol||""}|${Math.random()}`);
+  out.datetime = String(out.datetime || new Date().toISOString());
+  out.exchange = String(out.exchange || "UNKNOWN");
+  out.symbol = String(out.symbol || "");
+  out.marketType = String(out.marketType || "UNKNOWN");
+  out.side = String(out.side || "");
+  out.qty = parseNumber(out.qty);
+  out.price = parseNumber(out.price);
+  out.realizedPnlUsd = parseNumber(out.realizedPnlUsd);
+  out.feesUsd = parseNumber(out.feesUsd);
+  out.fundingUsd = parseNumber(out.fundingUsd);
+  out.netPnlUsd = parseNumber(out.netPnlUsd);
+  out.notes = String(out.notes || "");
+  return out;
+}
+
+// ---------- DB upsert (dedupe by tradeKey) ----------
+async function upsertTrades(rows) {
+  const existing = await db.trades.toArray();
+  const keySet = new Set(existing.map(x => x.tradeKey));
+  const toAdd = rows.filter(r => r && r.tradeKey && !keySet.has(r.tradeKey));
+  if (toAdd.length) await db.trades.bulkAdd(toAdd);
+  return { added: toAdd.length, skipped: rows.length - toAdd.length };
+}
+
+// ---------- CSV import (kept simple: use your existing formats) ----------
 function parseCsv(text) {
   const rows = [];
   let i = 0, field = "", row = [], inQuotes = false;
@@ -199,9 +267,9 @@ function parseCsv(text) {
 }
 
 function rowsToObjects(rows) {
-  const headers = rows[0].map((h, i) => {
+  const headers = rows[0].map((h,i) => {
     let t = (h ?? "").toString().trim();
-    if (i === 0) t = t.replace(/^﻿/, "");
+    if (i===0) t = t.replace(/^﻿/, "");
     return t;
   });
   const objs = [];
@@ -217,196 +285,197 @@ function rowsToObjects(rows) {
 
 function detectCsvType(headers) {
   const h = headers.map(x => x.trim().replace(/^﻿/, "").toLowerCase());
-
-  // Kraken Futures Account Log (your exact header includes these)
-  const isKrakenFutures =
-    h.includes("uid") &&
-    h.includes("datetime") &&
-    h.includes("type") &&
-    h.includes("realized pnl") &&
-    h.includes("fee") &&
-    h.includes("realized funding");
-
-  if (isKrakenFutures) return "KRAKEN_FUTURES_ACCOUNT_LOG";
-
+  // Blofin order history
+  if (h.includes("underlying asset") && h.includes("order time") && h.includes("pnl") && h.includes("fee")) return "BLOFIN_ORDER_HISTORY";
+  // Kraken spot/futures trades.csv
+  if (h.includes("txid") && h.includes("pair") && h.includes("time")) return "KRAKEN_TRADES";
+  // Kraken Futures account log CSV (the one from futures.kraken.com -> Trade -> History -> Logs -> Download All)
+  if (h.includes("uid") && h.includes("datetime") && h.includes("type") && h.includes("realized pnl")) return "KRAKEN_FUTURES_ACCOUNT_LOG";
   return "UNKNOWN";
 }
 
-function normalizeKrakenFuturesAccountLog(objs) {
-  // Based on your columns:
-  // uid,dateTime,account,type,symbol,contract,change,new balance,new average entry price,trade price,mark price,funding rate,realized pnl,fee,realized funding,collateral,conversion spread percentage,liquidation fee,position uid
+// Blofin -> realized pnl/fee (USDT ~ USD)
+function toIsoDateTimeFromBlofin(mdy) {
+  const m = String(mdy).match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const [_, mm, dd, yyyy, HH, MM, SS] = m;
+  return new Date(Date.UTC(+yyyy, +mm-1, +dd, +HH, +MM, +SS)).toISOString();
+}
+function toIsoFromUnixSeconds(sec) {
+  const n = parseNumber(sec);
+  if (!n) return null;
+  return new Date(n * 1000).toISOString();
+}
 
+function normalizeBlofin(objs) {
   const out = [];
-
   for (const o of objs) {
-    const uid = safeText(o["uid"]).trim();
-    const typeRaw = safeText(o["type"]).trim(); // e.g. "futures trade", "funding rate change", etc.
-    const dtIso = parseKrakenFuturesDateTime(o["dateTime"] || o["datetime"]);
-    if (!dtIso) continue;
+    if ((o["Status"] || "").toLowerCase() !== "filled") continue;
+    const pnlRaw = (o["PNL"] || "").trim();
+    if (!pnlRaw || pnlRaw === "--") continue;
+    const datetime = toIsoDateTimeFromBlofin(o["Order Time"]);
+    if (!datetime) continue;
 
-    // We include rows that have any effect on PnL/funding/fees.
-    const realizedPnl = parseNumber(o["realized pnl"]);
-    const fee = Math.abs(parseNumber(o["fee"]));
-    const realizedFunding = parseNumber(o["realized funding"]);
-    const liqFee = Math.abs(parseNumber(o["liquidation fee"]));
-
-    const hasEffect = (realizedPnl !== 0) || (fee !== 0) || (realizedFunding !== 0) || (liqFee !== 0);
-    if (!hasEffect) continue;
-
-    // symbol/contract
-    const symbol = (safeText(o["contract"] || o["symbol"])).trim().toUpperCase();
-
-    // Net: pnl - fees - liquidationFee + funding
-    const net = realizedPnl - fee - liqFee + realizedFunding;
-
-    const tradeKey = uid ? `KRAKENF|${uid}` : `KRAKENF|${dtIso}|${symbol}|${typeRaw}|${realizedPnl}|${fee}|${realizedFunding}|${liqFee}`;
+    const symbol = (o["Underlying Asset"] || "").trim();
+    const sideRaw = (o["Side"] || "");
+    const side = sideRaw.toLowerCase().includes("sell") ? "SELL" : "BUY";
+    const qty = parseNumber(o["Filled"]);
+    const price = parseNumber(o["Avg Fill"]) || parseNumber(o["Price"]);
+    const pnlUsd = parseNumber(o["PNL"]);
+    const feeUsd = Math.abs(parseNumber(o["Fee"]));
+    const fundingUsd = 0;
+    const netUsd = pnlUsd - feeUsd + fundingUsd;
 
     out.push({
-      datetime: dtIso,
-      exchange: "KRAKEN",
+      datetime,
+      exchange: "BLOFIN",
       symbol,
       marketType: "FUTURES",
-      side: typeRaw.toUpperCase(),
-      qty: 0,
-      price: parseNumber(o["trade price"]),
-      realizedPnlUsd: realizedPnl,
-      feesUsd: fee + liqFee,
-      fundingUsd: realizedFunding,
-      netPnlUsd: net,
-      notes: safeText(o["position uid"] || ""),
-      tradeKey
+      side,
+      qty,
+      price,
+      realizedPnlUsd: pnlUsd,
+      feesUsd: feeUsd,
+      fundingUsd,
+      netPnlUsd: netUsd,
+      notes: (o["Order Options"] || o["Status"] || ""),
+      tradeKey: `BLOFIN|${o["Order Time"]}|${symbol}|${side}|${qty}|${price}|${pnlUsd}|${feeUsd}`
     });
   }
-
   return out;
 }
 
-// ----------------- DB upsert -----------------
-async function upsertTrades(rows) {
-  if (!rows?.length) return { added: 0, skipped: 0 };
+function normalizeKrakenTrades(objs) {
+  const out = [];
+  for (const o of objs) {
+    const datetime = o["time"] ? toIsoFromUnixSeconds(o["time"]) : null;
+    if (!datetime) continue;
+    const symbol = String(o["pair"] || o["symbol"] || "");
+    const type = String(o["type"] || o["side"] || "");
+    const side = type.toLowerCase().includes("sell") ? "SELL" : "BUY";
+    const qty = parseNumber(o["vol"] || o["qty"] || o["volume"]);
+    const price = parseNumber(o["price"] || o["avgPrice"]);
+    const feeUsd = Math.abs(parseNumber(o["fee"]));
+    const netUsd = parseNumber(o["net"] || 0);
 
-  // Build keyset from DB (tradeKey unique)
-  const existing = await db.trades.toArray();
-  const keySet = new Set(existing.map(x => x.tradeKey));
+    out.push({
+      datetime,
+      exchange: "KRAKEN",
+      symbol,
+      marketType: "SPOT",
+      side,
+      qty,
+      price,
+      realizedPnlUsd: 0,
+      feesUsd: feeUsd,
+      fundingUsd: 0,
+      netPnlUsd: netUsd,
+      notes: String(o["txid"] || ""),
+      tradeKey: `KRAKEN|${o["txid"]}|${datetime}|${symbol}|${qty}|${price}|${netUsd}`
+    });
+  }
+  return out;
+}
 
-  const toAdd = rows.filter(r => r.tradeKey && !keySet.has(r.tradeKey));
-  if (toAdd.length) await db.trades.bulkAdd(toAdd);
+function normalizeKrakenFuturesAccountLog(objs) {
+  // Based on the CSV you showed (uid,dateTime,account,type,...,realized pnl,fee,realized funding,...)
+  const out = [];
+  for (const o of objs) {
+    const dtStr = (o["dateTime"] || o["datetime"] || "").trim();
+    if (!dtStr) continue;
 
-  return { added: toAdd.length, skipped: rows.length - toAdd.length };
+    // CSV time looks like: 11/Jan/2026 21:24:14 (as in your screenshot)
+    // We'll store as-is if parse fails; app still sorts ok-ish, but best effort:
+    let datetimeIso = null;
+    const m = dtStr.match(/^(\d{1,2})\/([A-Za-z]{3})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/);
+    if (m) {
+      const monMap = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+      const dd = +m[1], mon = monMap[m[2]] ?? 0, yyyy = +m[3], HH = +m[4], MM = +m[5], SS = +m[6];
+      datetimeIso = new Date(Date.UTC(yyyy, mon, dd, HH, MM, SS)).toISOString();
+    } else {
+      datetimeIso = new Date().toISOString();
+    }
+
+    const type = String(o["type"] || "").toLowerCase();
+    const isTrade = type.includes("futures trade");
+    const isFunding = type.includes("funding rate change");
+
+    const symbol = String(o["contract"] || o["symbol"] || "").trim();
+    const pnlUsd = isTrade ? parseNumber(o["realized pnl"]) : 0;
+    const feeUsd = isTrade ? Math.abs(parseNumber(o["fee"])) : 0;
+    const fundingUsd = isFunding ? parseNumber(o["realized funding"] || o["change"]) : 0;
+
+    const netUsd = pnlUsd - feeUsd + fundingUsd;
+
+    out.push({
+      datetime: datetimeIso,
+      exchange: "KRAKEN",
+      symbol,
+      marketType: "FUTURES",
+      side: (o["type"] || "").toUpperCase(),
+      qty: 0,
+      price: parseNumber(o["trade price"] || 0),
+      realizedPnlUsd: pnlUsd,
+      feesUsd: feeUsd,
+      fundingUsd,
+      netPnlUsd: netUsd,
+      notes: String(o["uid"] || ""),
+      tradeKey: `KRAKENF|${o["uid"] || (datetimeIso + "|" + symbol + "|" + netUsd)}`
+    });
+  }
+  return out;
 }
 
 async function importCsvFile(file) {
   const text = await file.text();
   const rows = parseCsv(text);
-  if (!rows.length) return { ok: false, msg: "Leeg bestand." };
-
+  if (!rows.length) return { ok:false, msg:"Leeg bestand." };
   const { headers, objs } = rowsToObjects(rows);
   const type = detectCsvType(headers);
 
   let normalized = [];
-  if (type === "KRAKEN_FUTURES_ACCOUNT_LOG") normalized = normalizeKrakenFuturesAccountLog(objs);
-  else return { ok: false, msg: `Onbekend CSV formaat. Headers: ${headers.slice(0, 8).join(", ")}...` };
+  if (type === "BLOFIN_ORDER_HISTORY") normalized = normalizeBlofin(objs);
+  else if (type === "KRAKEN_TRADES") normalized = normalizeKrakenTrades(objs);
+  else if (type === "KRAKEN_FUTURES_ACCOUNT_LOG") normalized = normalizeKrakenFuturesAccountLog(objs);
+  else return { ok:false, msg:`Onbekend CSV formaat (${headers.slice(0,6).join(", ")}...)` };
 
-  const res = await upsertTrades(normalized);
-  return { ok: true, type, ...res };
+  const res = await upsertTrades(normalized.map(sanitizeRow));
+  return { ok:true, type, ...res };
 }
 
-// ----------------- JSON sync (Netlify) -----------------
-async function syncFromJson() {
-  try {
-    const url = `${DATA_URL}?ts=${Date.now()}`; // cache-buster
-    const r = await fetch(url, { cache: "no-store" });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const payload = await r.json();
-
-    // Expected format:
-    // { generated_at: "...", rows: [ ... ] }
-    const rows = Array.isArray(payload?.rows) ? payload.rows : [];
-
-    if (!rows.length) {
-      els.dbBadge.textContent = "Sync OK (+0)";
-      return { ok: true, added: 0 };
-    }
-
-    const res = await upsertTrades(rows);
-    els.dbBadge.textContent = `Sync OK (+${res.added})`;
-    return { ok: true, ...res };
-  } catch (e) {
-    els.dbBadge.textContent = "Sync: offline";
-    return { ok: false, err: String(e?.message || e) };
-  }
-}
-
-// ----------------- Filtering & Aggregation -----------------
-async function getFilteredTrades(nowRef) {
+// ---------- aggregation ----------
+async function getFilteredTrades() {
   let items = await db.trades.toArray();
-
+  const nowRef = items.length ? new Date(items.reduce((m,t)=> (t.datetime>m?t.datetime:m), items[0].datetime)) : new Date();
   const cutoff = rangeCutoffIso(state.range, nowRef);
-  if (cutoff) items = items.filter(t => t.datetime >= cutoff);
 
+  if (cutoff) items = items.filter(t => t.datetime >= cutoff);
   if (state.exchange !== "ALL") items = items.filter(t => t.exchange === state.exchange);
   if (state.marketType !== "ALL") items = items.filter(t => t.marketType === state.marketType);
 
-  if (state.search) {
-    const q = state.search.toLowerCase();
-    items = items.filter(t =>
-      (t.symbol || "").toLowerCase().includes(q) ||
-      (t.notes || "").toLowerCase().includes(q) ||
-      (t.tradeKey || "").toLowerCase().includes(q)
-    );
-  }
+  const q = (state.search || "").trim().toLowerCase();
+  if (q) items = items.filter(t =>
+    (t.symbol||"").toLowerCase().includes(q) ||
+    (t.notes||"").toLowerCase().includes(q) ||
+    (t.tradeKey||"").toLowerCase().includes(q)
+  );
 
-  items.sort((a, b) => (a.datetime < b.datetime ? 1 : -1));
+  items.sort((a,b)=> (a.datetime < b.datetime ? 1 : -1));
   return items;
 }
 
 function aggregateKPIs(trades) {
-  const net = trades.reduce((s, t) => s + (t.netPnlUsd || 0), 0);
-  const fees = trades.reduce((s, t) => s + (t.feesUsd || 0), 0);
-  const wins = trades.filter(t => (t.netPnlUsd || 0) > 0).length;
+  const net = trades.reduce((s,t)=> s + (t.netPnlUsd||0), 0);
+  const fees = trades.reduce((s,t)=> s + (t.feesUsd||0), 0);
+  const wins = trades.filter(t => (t.netPnlUsd||0) > 0).length;
   const count = trades.length;
-  const winrate = count ? wins / count : 0;
-  return { net, fees, wins, count, winrate };
+  return { net, fees, wins, count, winrate: count ? wins/count : 0 };
 }
 
-function buildEquitySeries(tradesAsc) {
-  let cum = 0;
-  const pts = [];
-  for (const t of tradesAsc) {
-    cum += (t.netPnlUsd || 0);
-    pts.push({ x: t.datetime, y: cum });
-  }
-  return pts;
-}
+// ---------- charts (simple canvas) ----------
+function clearCanvas(ctx){ ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height); }
 
-function monthlyBuckets(trades, nowRef) {
-  const now = nowRef instanceof Date ? nowRef : new Date();
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const months = [];
-  for (let i = 11; i >= 0; i--) {
-    const d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
-    d.setUTCMonth(d.getUTCMonth() - i);
-    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-    months.push({ key, label: key, net: 0, fees: 0, funding: 0 });
-  }
-  const map = new Map(months.map(m => [m.key, m]));
-  for (const t of trades) {
-    const d = new Date(t.datetime);
-    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-    const m = map.get(key);
-    if (m) {
-      m.net += (t.netPnlUsd || 0);
-      m.fees += (t.feesUsd || 0);
-      m.funding += (t.fundingUsd || 0);
-    }
-  }
-  return months;
-}
-
-// ----------------- Canvas charts -----------------
-function clearCanvas(ctx) { ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); }
-
-function drawLineChart(canvas, points, { yLabel = "" } = {}) {
+function drawLineChart(canvas, points, { yLabel="" } = {}) {
   const ctx = canvas.getContext("2d");
   const w = canvas.width, h = canvas.height;
   clearCanvas(ctx);
@@ -414,7 +483,7 @@ function drawLineChart(canvas, points, { yLabel = "" } = {}) {
   if (!points.length) {
     ctx.fillStyle = "rgba(229,231,235,.8)";
     ctx.font = "14px system-ui";
-    ctx.fillText("Geen data (sync of import).", 16, 32);
+    ctx.fillText("Geen data (importeer CSV).", 16, 32);
     return;
   }
 
@@ -427,65 +496,83 @@ function drawLineChart(canvas, points, { yLabel = "" } = {}) {
   const yPad = (ymax - ymin) * 0.08 || 1;
   const y0 = ymin - yPad, y1 = ymax + yPad;
 
-  function X(t) { return pad + (t - xmin) / (xmax - xmin || 1) * (w - pad * 1.2); }
-  function Y(v) { return h - pad - (v - y0) / (y1 - y0 || 1) * (h - pad * 1.4); }
+  const X = (t)=> pad + (t - xmin) / (xmax - xmin || 1) * (w - pad*1.2);
+  const Y = (v)=> h - pad - (v - y0) / (y1 - y0 || 1) * (h - pad*1.4);
 
   // grid
   ctx.strokeStyle = "rgba(154,164,178,.15)";
   ctx.lineWidth = 1;
-  for (let i = 0; i < 5; i++) {
-    const y = pad + i * (h - pad * 1.4) / 4;
-    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w - pad * 0.2, y); ctx.stroke();
+  for (let i=0;i<5;i++){
+    const y = pad + i*(h - pad*1.4)/4;
+    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w - pad*0.2, y); ctx.stroke();
   }
 
-  // label
   ctx.fillStyle = "rgba(154,164,178,.8)";
   ctx.font = "12px system-ui";
   ctx.fillText(yLabel, 12, 18);
 
   // line
-  ctx.strokeStyle = "rgba(139,92,246,.95)"; // purple-ish
+  ctx.strokeStyle = "rgba(34,197,94,.9)";
   ctx.lineWidth = 2;
   ctx.beginPath();
-  for (let i = 0; i < points.length; i++) {
-    const x = X(xs[i]);
-    const y = Y(ys[i]);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+  for (let i=0;i<points.length;i++){
+    const x = X(xs[i]), y = Y(ys[i]);
+    if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
   }
   ctx.stroke();
 
   // zero line
   const yZero = Y(0);
   ctx.strokeStyle = "rgba(239,68,68,.25)";
-  ctx.beginPath(); ctx.moveTo(pad, yZero); ctx.lineTo(w - pad * 0.2, yZero); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(pad, yZero); ctx.lineTo(w - pad*0.2, yZero); ctx.stroke();
+}
+
+function monthlyBuckets(trades, nowRef) {
+  const now = nowRef instanceof Date ? nowRef : new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const months = [];
+  for (let i=11;i>=0;i--){
+    const d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth()-i, 1));
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
+    months.push({ key, label:key, net:0 });
+  }
+  const map = new Map(months.map(m=>[m.key,m]));
+  for (const t of trades) {
+    const d = new Date(t.datetime);
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
+    const m = map.get(key);
+    if (m) m.net += (t.netPnlUsd||0);
+  }
+  return months;
 }
 
 function drawBarChart(canvas, buckets) {
   const ctx = canvas.getContext("2d");
   const w = canvas.width, h = canvas.height;
   clearCanvas(ctx);
+
   if (!buckets.length) return;
 
   const pad = 50;
-  const vals = buckets.map(b => b.net);
+  const vals = buckets.map(b=>b.net);
   const vmax = Math.max(...vals, 0);
   const vmin = Math.min(...vals, 0);
   const span = (vmax - vmin) || 1;
-  function Y(v) { return h - pad - (v - vmin) / span * (h - pad * 1.4); }
+
+  const Y = (v)=> h - pad - (v - vmin) / span * (h - pad*1.4);
 
   ctx.strokeStyle = "rgba(154,164,178,.15)";
   ctx.lineWidth = 1;
-  for (let i = 0; i < 5; i++) {
-    const y = pad + i * (h - pad * 1.4) / 4;
-    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w - pad * 0.2, y); ctx.stroke();
+  for (let i=0;i<5;i++){
+    const y = pad + i*(h - pad*1.4)/4;
+    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w - pad*0.2, y); ctx.stroke();
   }
 
-  const barW = (w - pad * 1.2) / buckets.length;
-  for (let i = 0; i < buckets.length; i++) {
+  const barW = (w - pad*1.2) / buckets.length;
+  for (let i=0;i<buckets.length;i++){
     const b = buckets[i];
-    const x = pad + i * barW + barW * 0.15;
-    const bw = barW * 0.7;
+    const x = pad + i*barW + barW*0.15;
+    const bw = barW*0.7;
     const y0 = Y(0);
     const yv = Y(b.net);
     const top = Math.min(y0, yv);
@@ -496,92 +583,133 @@ function drawBarChart(canvas, buckets) {
 
   ctx.fillStyle = "rgba(154,164,178,.9)";
   ctx.font = "11px system-ui";
-  for (let i = 0; i < buckets.length; i += 2) {
-    const x = pad + i * barW + barW * 0.1;
+  for (let i=0;i<buckets.length;i+=2){
+    const x = pad + i*barW + barW*0.1;
     ctx.fillText(buckets[i].label.slice(2), x, h - 18);
   }
 }
 
-// ----------------- UI render -----------------
-function setKpi(el, valueText, goodBad = null, subText = null) {
-  el.classList.remove("good", "bad");
+// ---------- render ----------
+function setKpi(el, valueText, goodBad=null, subText=null) {
+  if (!el) return;
+  el.classList.remove("good","bad");
   if (goodBad === "good") el.classList.add("good");
   if (goodBad === "bad") el.classList.add("bad");
-  el.querySelector(".value").textContent = valueText;
-  if (subText !== null) el.querySelector(".sub").textContent = subText;
+  const v = el.querySelector(".value");
+  const s = el.querySelector(".sub");
+  if (v) v.textContent = valueText;
+  if (s && subText !== null) s.textContent = subText;
+}
+
+function renderLiveBox() {
+  const box = ensureLiveContainer();
+  const meta = document.getElementById("liveMeta");
+  const posRows = document.getElementById("livePositionsRows");
+  const accRows = document.getElementById("liveAccountsRows");
+
+  const when = state.live.synced_at ? new Date(state.live.synced_at).toLocaleString("nl-NL") : "—";
+  if (meta) meta.textContent = `Laatste sync: ${when} • fills: ${state.live.fills.length} • open pos: ${state.live.openPositions.length}`;
+
+  if (posRows) {
+    posRows.innerHTML = (state.live.openPositions || []).slice(0, 50).map(p => {
+      const sym = p.symbol || "";
+      const side = p.side || "";
+      const size = parseNumber(p.size);
+      const price = parseNumber(p.price);
+      const uf = parseNumber(p.unrealizedFunding);
+      return `<tr>
+        <td>${sym}</td>
+        <td>${side}</td>
+        <td class="right mono">${size.toFixed(4)}</td>
+        <td class="right mono">${price.toFixed(4)}</td>
+        <td class="right mono">${uf.toFixed(4)}</td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="5" class="muted">Geen open positions in snapshot.</td></tr>`;
+  }
+
+  if (accRows) {
+    const keys = Object.keys(state.live.accounts || {}).slice(0, 30);
+    accRows.innerHTML = keys.map(k => {
+      const v = state.live.accounts[k];
+      // try balance-like fields
+      const bal = (v && typeof v === "object")
+        ? (v.cash?.balance ?? v.balance ?? v.cash ?? "")
+        : v;
+      return `<tr><td class="mono">${k}</td><td class="right mono">${String(bal)}</td></tr>`;
+    }).join("") || `<tr><td colspan="2" class="muted">Geen accounts data.</td></tr>`;
+  }
 }
 
 async function renderAll() {
-  // FIX: nowRef must exist here
-  const all = await db.trades.toArray();
-  const nowRef = all.length
-    ? new Date(all.reduce((m, t) => (t.datetime > m ? t.datetime : m), all[0].datetime))
-    : new Date();
-
-  const trades = await getFilteredTrades(nowRef);
+  const trades = await getFilteredTrades();
   const k = aggregateKPIs(trades);
-
-  els.summaryLine.textContent = `${k.count} trades • ${state.exchange}/${state.marketType} • ${state.range}`;
 
   const netC = convertUsdToSelected(k.net);
   const feeC = convertUsdToSelected(k.fees);
 
-  setKpi(els.kpiNet, formatMoney(netC, convertedLabel()), netC >= 0 ? "good" : "bad");
+  setKpi(els.kpiNet, formatMoney(netC, convertedLabel()), netC>=0 ? "good":"bad");
   setKpi(els.kpiFees, formatMoney(feeC, convertedLabel()));
   setKpi(els.kpiWinrate, formatPct(k.winrate), null, `${k.wins} / ${k.count}`);
 
-  els.countBadge.textContent = `${k.count} trades`;
-  els.tradeCount.textContent = `${k.count} trades`;
-  els.dbBadge.textContent = els.dbBadge.textContent || "Lokaal";
+  if (els.countBadge) els.countBadge.textContent = `${k.count} trades`;
+  if (els.tradeCount) els.tradeCount.textContent = `${trades.length} trades`;
 
-  const tradesAsc = [...trades].sort((a, b) => (a.datetime > b.datetime ? 1 : -1));
-  const ptsUsd = buildEquitySeries(tradesAsc);
-  const pts = ptsUsd.map(p => ({ x: p.x, y: convertUsdToSelected(p.y) }));
-  drawLineChart(els.equityCanvas, pts, { yLabel: `Cumulatief (${convertedLabel()})` });
+  // equity
+  if (els.equityCanvas) {
+    const tradesAsc = [...trades].sort((a,b)=> (a.datetime > b.datetime ? 1 : -1));
+    let cum = 0;
+    const pts = tradesAsc.map(t => {
+      cum += (t.netPnlUsd||0);
+      return { x: t.datetime, y: convertUsdToSelected(cum) };
+    });
+    drawLineChart(els.equityCanvas, pts, { yLabel: `Cumulatief (${convertedLabel()})` });
+  }
 
-  const bucketsUsd = monthlyBuckets(trades, nowRef);
-  const buckets = bucketsUsd.map(b => ({
-    ...b,
-    net: convertUsdToSelected(b.net),
-    fees: convertUsdToSelected(b.fees),
-    funding: convertUsdToSelected(b.funding)
-  }));
-  drawBarChart(els.monthlyCanvas, buckets);
-  const net12 = buckets.reduce((s, b) => s + b.net, 0);
-  els.monthlyHint.textContent = `Som 12 maanden: ${formatMoney(net12, convertedLabel())}`;
+  // monthly
+  if (els.monthlyCanvas) {
+    const nowRef = trades.length ? new Date(trades[0].datetime) : new Date();
+    const bucketsUsd = monthlyBuckets(trades, nowRef);
+    const buckets = bucketsUsd.map(b => ({ ...b, net: convertUsdToSelected(b.net) }));
+    drawBarChart(els.monthlyCanvas, buckets);
+    const net12 = buckets.reduce((s,b)=>s+b.net,0);
+    if (els.monthlyHint) els.monthlyHint.textContent = `Som 12 maanden: ${formatMoney(net12, convertedLabel())}`;
+  }
 
-  const rows = trades.slice(0, 500);
-  els.tradeRows.innerHTML = rows.map(t => {
-    const dt = new Date(t.datetime);
-    const dtLabel = dt.toLocaleString("nl-NL", { year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" });
-    const fees = convertUsdToSelected(t.feesUsd || 0);
-    const pnl = convertUsdToSelected(t.realizedPnlUsd || 0);
-    const net = convertUsdToSelected(t.netPnlUsd || 0);
-    return `<tr>
-      <td class="mono">${dtLabel}</td>
-      <td>${t.exchange}</td>
-      <td>${t.symbol}</td>
-      <td>${t.marketType}</td>
-      <td>${t.side}</td>
-      <td class="right mono">${(t.qty ?? 0).toFixed(4)}</td>
-      <td class="right mono">${(t.price ?? 0).toFixed(4)}</td>
-      <td class="right mono">${formatMoney(fees, convertedLabel())}</td>
-      <td class="right mono ${pnlClass(pnl)}">${formatMoney(pnl, convertedLabel())}</td>
-      <td class="right mono ${pnlClass(net)}">${formatMoney(net, convertedLabel())}</td>
-      <td class="mono muted">${safeText(t.notes).slice(0,40)}</td>
-    </tr>`;
-  }).join("");
+  // table
+  if (els.tradeRows) {
+    const rows = trades.slice(0, 500);
+    els.tradeRows.innerHTML = rows.map(t => {
+      const dtLabel = new Date(t.datetime).toLocaleString("nl-NL", { year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" });
+      const fees = convertUsdToSelected(t.feesUsd || 0);
+      const pnl = convertUsdToSelected(t.realizedPnlUsd || 0);
+      const net = convertUsdToSelected(t.netPnlUsd || 0);
+      return `<tr>
+        <td class="mono">${dtLabel}</td>
+        <td>${t.exchange}</td>
+        <td>${t.symbol}</td>
+        <td>${t.marketType}</td>
+        <td>${t.side}</td>
+        <td class="right mono">${(t.qty ?? 0).toFixed(4)}</td>
+        <td class="right mono">${(t.price ?? 0).toFixed(4)}</td>
+        <td class="right mono">${formatMoney(fees, convertedLabel())}</td>
+        <td class="right mono ${pnlClass(pnl)}">${formatMoney(pnl, convertedLabel())}</td>
+        <td class="right mono ${pnlClass(net)}">${formatMoney(net, convertedLabel())}</td>
+        <td class="mono muted">${String(t.notes||"").slice(0,40)}</td>
+      </tr>`;
+    }).join("");
+  }
 
-  els.tradeCount.textContent = `${trades.length} trades${trades.length > 500 ? " (top 500 getoond)" : ""}`;
+  renderLiveBox();
 }
 
-// ----------------- Tabs & Events -----------------
+// ---------- UI wiring ----------
 function setActiveTab(tab) {
-  for (const el of [...els.tabs.querySelectorAll(".tab")]) {
-    el.classList.toggle("active", el.dataset.tab === tab);
-  }
-  for (const [k, v] of Object.entries(els.views)) {
-    v.style.display = (k === tab) ? "" : "none";
+  const tabs = els.tabs?.querySelectorAll?.(".tab") || [];
+  tabs.forEach(el => el.classList.toggle("active", el.dataset.tab === tab));
+
+  // hide views
+  for (const [k,v] of Object.entries(els.views || {})) {
+    if (v) v.style.display = (k === tab) ? "" : "none";
   }
 }
 
@@ -598,28 +726,24 @@ els.range?.addEventListener("change", async () => { state.range = els.range.valu
 els.search?.addEventListener("input", async () => { state.search = els.search.value; await renderAll(); });
 
 els.importBtn?.addEventListener("click", async () => {
-  const f = els.fileInput.files?.[0];
-  if (!f) { els.importStatus.textContent = "Kies eerst een CSV."; return; }
-  els.importStatus.textContent = "Importeren…";
+  const f = els.fileInput?.files?.[0];
+  if (!f) { if (els.importStatus) els.importStatus.textContent = "Kies eerst een CSV."; return; }
+  if (els.importStatus) els.importStatus.textContent = "Importeren…";
   try {
     const res = await importCsvFile(f);
-    els.importStatus.textContent = res.ok
+    if (els.importStatus) els.importStatus.textContent = res.ok
       ? `OK: ${res.type} • +${res.added} • ${res.skipped} overgeslagen`
       : `Error: ${res.msg}`;
     await renderAll();
-  } catch (e) {
-    els.importStatus.textContent = `Error: import mislukt (${String(e?.message || e)})`;
+  } catch {
+    if (els.importStatus) els.importStatus.textContent = "Error: import mislukt.";
   }
 });
 
 els.exportBtn?.addEventListener("click", async () => {
   const trades = await db.trades.toArray();
   const headers = ["datetime","exchange","symbol","marketType","side","qty","price","realizedPnlUsd","feesUsd","fundingUsd","netPnlUsd","notes","tradeKey"];
-  const lines = [headers.join(",")].concat(trades.map(t => headers.map(h => {
-    const v = t[h] ?? "";
-    const s = String(v).replace(/"/g,'""');
-    return `"${s}"`;
-  }).join(",")));
+  const lines = [headers.join(",")].concat(trades.map(t => headers.map(h => `"${String(t[h] ?? "").replace(/"/g,'""')}"`).join(",")));
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -634,24 +758,23 @@ els.resetBtn?.addEventListener("click", async () => {
   await renderAll();
 });
 
-// ----------------- Boot -----------------
-(async function init() {
+// ---------- boot ----------
+(async function init(){
   await fetchFxRate();
 
-  state.currency = els.currency?.value || "USD";
-  state.exchange = els.exchange?.value || "ALL";
-  state.marketType = els.marketType?.value || "ALL";
-  state.range = els.range?.value || "12m";
+  // defaults from UI if present
+  if (els.currency) state.currency = els.currency.value;
+  if (els.exchange) state.exchange = els.exchange.value;
+  if (els.marketType) state.marketType = els.marketType.value;
+  if (els.range) state.range = els.range.value;
 
-  // 1) Try auto-sync from Netlify JSON
-  await syncFromJson();
-
-  // 2) Render
+  await fetchLiveJson();
   await renderAll();
 
-  // 3) Periodic refresh (optional)
+  // auto refresh
   setInterval(async () => {
-    await syncFromJson();
+    await fetchFxRate();
+    await fetchLiveJson();
     await renderAll();
   }, REFRESH_MS);
 })();
