@@ -5,173 +5,243 @@ import base64
 import hmac
 import hashlib
 from datetime import datetime, timezone
-from urllib.parse import urlencode, quote
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
 
+# ------------------------------------------------------------
+# CONFIG
+# ------------------------------------------------------------
+BASE_URL = "https://futures.kraken.com"  # host is correct
+API_PREFIX = "/derivatives"             # IMPORTANT for Kraken Futures REST
+API_VERSION = "/api/v3"
 
-BASE_URL = "https://futures.kraken.com/derivatives"
-API_PATH_PREFIX = "/api/v3"  # IMPORTANT: this is what must be used in the signing 'endpointPath' per Kraken docs.
+FILL_COUNT = int(os.getenv("FILL_COUNT", "500"))
+
+ROOT = Path(__file__).resolve().parents[1]  # ...\pnl_traden_github_netlify_ready
+OUT_FILE = ROOT / "site" / "data" / "pnl.json"
+
+TIMEOUT = 30
 
 
-def now_iso_utc() -> str:
+# ------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------
+def now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def b64decode_lenient(s: str) -> bytes:
+def must_env(name: str) -> str:
+    v = os.getenv(name, "")
+    if not v:
+        raise RuntimeError(f"Missing env var: {name}")
+    return v
+
+
+def b64decode_secret(secret_b64: str) -> bytes:
     """
-    Kraken Futures api_secret is base64; sometimes copied without correct '=' padding.
-    We fix padding automatically.
+    Kraken Futures API secret is base64. Common issues:
+    - accidental spaces/newlines
+    - missing padding '='
     """
-    s = (s or "").strip()
-    # add padding if missing
-    missing = (-len(s)) % 4
-    if missing:
-        s += "=" * missing
+    s = (secret_b64 or "").strip().replace(" ", "").replace("\n", "").replace("\r", "")
+    # fix padding
+    pad = (-len(s)) % 4
+    if pad:
+        s += "=" * pad
     return base64.b64decode(s)
 
 
-def build_query(params: dict | None) -> str:
+def sign_request(secret_b64: str, path: str, nonce: str, postdata: str) -> str:
     """
-    Build a querystring EXACTLY as will be used in the request.
-    Use %20 for spaces (quote) and keep ordering stable.
+    Kraken Futures signing:
+    message = postdata + nonce + path
+    HMAC_SHA256(secret, message) -> base64
     """
-    if not params:
-        return ""
-    # doseq for list params; quote_via=quote to get %20 instead of +
-    return urlencode(params, doseq=True, quote_via=quote, safe="")
+    secret = b64decode_secret(secret_b64)
+    msg = (postdata + nonce + path).encode("utf-8")
+    sig = hmac.new(secret, msg, hashlib.sha256).digest()
+    return base64.b64encode(sig).decode("utf-8")
 
 
-def sign_authent(api_secret_b64: str, endpoint_path: str, nonce: str, postdata: str) -> str:
+def signed_get(key: str, secret_b64: str, endpoint_path: str, params: dict | None = None) -> dict:
     """
-    Implements Kraken Derivatives REST authent generation:
-
-    1) concat: postData + nonce + endpointPath
-    2) SHA256 hash
-    3) base64-decode api_secret
-    4) HMAC-SHA512(secret, sha256_digest)
-    5) base64-encode result
-
-    endpointPath example: /api/v3/fills
-    postData example: count=10 or greeting=hello%20world (url-encoded)
-    Source: Kraken Support article. :contentReference[oaicite:3]{index=3}
+    endpoint_path must be like: /api/v3/fills  (WITHOUT /derivatives)
+    We will call: https://futures.kraken.com/derivatives + endpoint_path
+    And sign path: endpoint_path (as required by Kraken Futures)
     """
-    secret = b64decode_lenient(api_secret_b64)
-
-    msg = (postdata or "") + (nonce or "") + endpoint_path
-    sha256_digest = hashlib.sha256(msg.encode("utf-8")).digest()
-
-    sig = hmac.new(secret, sha256_digest, hashlib.sha512).digest()
-    return base64.b64encode(sig).decode("utf-8").strip()
-
-
-def private_get(api_key: str, api_secret_b64: str, api_path: str, params: dict | None = None, timeout: int = 30):
-    """
-    api_path: e.g. /fills  (WITHOUT /api/v3)
-    We will:
-      - request URL:   https://.../derivatives/api/v3/fills?...
-      - sign endpoint: /api/v3/fills
-      - postData:      exact querystring used
-    """
-    endpoint_path = f"{API_PATH_PREFIX}{api_path}"              # for signing
-    query = build_query(params)                                 # MUST match what we send
-    url = f"{BASE_URL}{endpoint_path}" + (f"?{query}" if query else "")
+    params = params or {}
+    url = f"{BASE_URL}{API_PREFIX}{endpoint_path}"
 
     nonce = str(int(time.time() * 1000))
+    postdata = ""  # GET has empty postdata
 
-    authent = sign_authent(api_secret_b64, endpoint_path, nonce, query)
+    auth = sign_request(secret_b64, endpoint_path, nonce, postdata)
 
     headers = {
-        "APIKey": api_key,
+        "APIKey": key,
         "Nonce": nonce,
-        "Authent": authent,
+        "Authent": auth,
+        "User-Agent": "pnl-traden-sync/1.0",
+        "Accept": "application/json",
     }
 
-    r = requests.get(url, headers=headers, timeout=timeout)
-
-    # Try to parse JSON either way
+    r = requests.get(url, params=params, headers=headers, timeout=TIMEOUT)
     try:
         data = r.json()
     except Exception:
         data = {"raw": r.text}
 
-    return r.status_code, data, url, endpoint_path, query
+    # handy debug (keeps it readable)
+    print(f"URL: {r.url}")
+    print(f"HTTP: {r.status_code}")
+
+    return {"status": r.status_code, "data": data}
 
 
-def require_env():
+# ------------------------------------------------------------
+# Fetchers
+# ------------------------------------------------------------
+def fetch_fills(key: str, secret: str, count: int = 500) -> list[dict]:
+    # IMPORTANT: endpoint path for signing is WITHOUT /derivatives
+    endpoint = f"{API_VERSION}/fills"
+    res = signed_get(key, secret, endpoint, params={"count": count})
+
+    if res["status"] != 200:
+        raise RuntimeError(f"Fills failed ({res['status']}): {res['data']}")
+
+    data = res["data"]
+    if data.get("result") != "success":
+        raise RuntimeError(f"Fills error: {data}")
+
+    return data.get("fills", [])
+
+
+def fetch_open_positions(key: str, secret: str) -> list[dict]:
+    endpoint = f"{API_VERSION}/openpositions"
+    res = signed_get(key, secret, endpoint)
+
+    if res["status"] != 200:
+        print("Openpositions warning:", res["data"])
+        return []
+
+    data = res["data"]
+    if data.get("result") != "success":
+        print("Openpositions warning:", data)
+        return []
+
+    return data.get("openPositions", [])
+
+
+def fetch_accounts(key: str, secret: str) -> dict:
+    endpoint = f"{API_VERSION}/accounts"
+    res = signed_get(key, secret, endpoint)
+
+    if res["status"] != 200:
+        print("Accounts warning:", res["data"])
+        return {}
+
+    data = res["data"]
+    if data.get("result") != "success":
+        print("Accounts warning:", data)
+        return {}
+
+    return data.get("accounts", {})
+
+
+# ------------------------------------------------------------
+# Normalization for the APP
+# The app expects:
+# { "generated_at": "...", "rows": [ { datetime, exchange, symbol, marketType, side, qty, price, realizedPnlUsd, feesUsd, fundingUsd, netPnlUsd, notes, tradeKey } ] }
+#
+# NOTE: Kraken "fills" do NOT contain realized PnL. So we store trades with pnl=0 for now.
+# Later we can add account-log parsing for realized PnL if your endpoint is available.
+# ------------------------------------------------------------
+def normalize_rows_from_fills(fills: list[dict]) -> list[dict]:
+    rows = []
+    for f in fills:
+        fill_id = f.get("fill_id") or f.get("fillId") or ""
+        symbol = f.get("symbol") or ""
+        side = (f.get("side") or "").upper()  # buy/sell
+        size = f.get("size") or 0
+        price = f.get("price") or 0
+        fill_time = f.get("fillTime") or f.get("time") or ""
+
+        # Ensure ISO-ish datetime
+        dt = fill_time
+        if isinstance(dt, str) and dt and not dt.endswith("Z") and "T" in dt:
+            dt = dt + "Z"
+
+        trade_key = f"KRAKENF|FILL|{fill_id}|{symbol}"
+
+        rows.append({
+            "datetime": dt or now_utc_iso(),
+            "exchange": "KRAKEN",
+            "symbol": symbol,
+            "marketType": "FUTURES",
+            "side": side,
+            "qty": float(size) if size is not None else 0.0,
+            "price": float(price) if price is not None else 0.0,
+            "realizedPnlUsd": 0.0,
+            "feesUsd": 0.0,
+            "fundingUsd": 0.0,
+            "netPnlUsd": 0.0,
+            "notes": "Kraken Futures fill (PnL via account-log later)",
+            "tradeKey": trade_key
+        })
+    return rows
+
+
+def write_json(rows: list[dict], extra: dict):
+    OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated_at": now_utc_iso(),
+        "rows": rows,
+        **extra
+    }
+    OUT_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(f"Wrote: {OUT_FILE}")
+    print(f"Rows: {len(rows)}")
+
+
+# ------------------------------------------------------------
+# MAIN
+# ------------------------------------------------------------
+def main():
+    # load .env from current folder (sync)
     load_dotenv()
-    key = (os.getenv("KRAKEN_FUTURES_KEY") or "").strip()
-    secret = (os.getenv("KRAKEN_FUTURES_SECRET") or "").strip()
+
+    key = os.getenv("KRAKEN_FUTURES_KEY", "").strip()
+    secret = os.getenv("KRAKEN_FUTURES_SECRET", "").strip()
 
     if not key or not secret:
-        raise SystemExit("Missing API key/secret. Put KRAKEN_FUTURES_KEY and KRAKEN_FUTURES_SECRET in .env")
+        raise RuntimeError("Missing API key/secret in .env (KRAKEN_FUTURES_KEY / KRAKEN_FUTURES_SECRET)")
 
-    # quick sanity checks
-    try:
-        _ = b64decode_lenient(secret)
-    except Exception:
-        raise SystemExit("KRAKEN_FUTURES_SECRET is not valid base64 (even after padding fix). Re-copy from Kraken.")
-
-    return key, secret
-
-
-def main():
-    key, secret = require_env()
-
-    out = {
-        "synced_at": now_iso_utc(),
-        "exchange": "kraken_futures",
-        "ok": True,
-        "errors": [],
-        "data": {}
-    }
-
-    # 1) Fills
     print("Syncing Kraken Futures fills...")
-    status, data, url, sign_path, qs = private_get(key, secret, "/fills", params={"count": 500})
-    print("URL:", url)
-    print("SIGN:", sign_path)
-    print("HTTP:", status)
+    fills = fetch_fills(key, secret, count=FILL_COUNT)
 
-    if not (isinstance(data, dict) and data.get("result") == "success"):
-        out["ok"] = False
-        out["errors"].append({"endpoint": "fills", "http": status, "body": data})
-    out["data"]["fills"] = data
-
-    # 2) Open positions
     print("\nSyncing Kraken Futures open positions...")
-    status, data, url, sign_path, qs = private_get(key, secret, "/openpositions")
-    print("URL:", url)
-    print("SIGN:", sign_path)
-    print("HTTP:", status)
+    positions = fetch_open_positions(key, secret)
 
-    if not (isinstance(data, dict) and data.get("result") == "success"):
-        out["ok"] = False
-        out["errors"].append({"endpoint": "openpositions", "http": status, "body": data})
-    out["data"]["openpositions"] = data
-
-    # 3) Accounts
     print("\nSyncing Kraken Futures accounts...")
-    status, data, url, sign_path, qs = private_get(key, secret, "/accounts")
-    print("URL:", url)
-    print("SIGN:", sign_path)
-    print("HTTP:", status)
+    accounts = fetch_accounts(key, secret)
 
-    if not (isinstance(data, dict) and data.get("result") == "success"):
-        out["ok"] = False
-        out["errors"].append({"endpoint": "accounts", "http": status, "body": data})
-    out["data"]["accounts"] = data
+    rows = normalize_rows_from_fills(fills)
 
-    # Write pnl.json for the Netlify site
-    # Adjust this path if your site folder differs
-    target = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "site", "data", "pnl.json"))
-    os.makedirs(os.path.dirname(target), exist_ok=True)
+    write_json(
+        rows,
+        extra={
+            "ok": True,
+            "exchange": "kraken_futures",
+            "raw_meta": {
+                "fills_count": len(fills),
+                "positions_count": len(positions),
+                "accounts_keys": list(accounts.keys())[:20],
+            }
+        }
+    )
 
-    with open(target, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, indent=2)
-
-    print(f"\nWrote: {target}")
     print("DONE.")
 
 
