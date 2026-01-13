@@ -614,6 +614,167 @@ function drawLineChart(canvas, points, { yLabel = "" } = {}) {
 }
 
 
+
+// ------------------------------------------------------------
+// Interactive line chart (crosshair + tooltip) for canvas charts
+// ------------------------------------------------------------
+function setupInteractiveLineChart(baseCanvas, points, opts = {}) {
+  if (!baseCanvas || !points || points.length === 0) return;
+  const wrap = baseCanvas.parentElement;
+  if (wrap) wrap.classList.add("chartWrap");
+
+  let overlay = wrap ? wrap.querySelector("canvas.chartOverlay") : null;
+  if (!overlay) {
+    overlay = document.createElement("canvas");
+    overlay.className = "chartOverlay";
+    if (wrap) wrap.appendChild(overlay);
+  }
+  overlay.width = baseCanvas.width;
+  overlay.height = baseCanvas.height;
+  overlay.style.width = baseCanvas.style.width || "100%";
+  overlay.style.height = baseCanvas.style.height || "100%";
+
+  let tip = wrap ? wrap.querySelector(".chartTooltip") : null;
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.className = "chartTooltip";
+    tip.style.display = "none";
+    if (wrap) wrap.appendChild(tip);
+  }
+
+  const ctx = overlay.getContext("2d");
+
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+  }[c]));
+
+  function getPctBase() {
+    const raw = localStorage.getItem("pnl_start_balance_usd");
+    const n = raw ? Number(raw) : 0;
+    return Number.isFinite(n) ? n : 0;
+  }
+  const fmtMoney = (n) => {
+    if (!Number.isFinite(n)) return "—";
+    const sign = n >= 0 ? "+" : "";
+    return sign + n.toFixed(2);
+  };
+  const fmtPct = (p) => {
+    if (!Number.isFinite(p)) return "—";
+    const sign = p >= 0 ? "+" : "";
+    return sign + p.toFixed(2) + "%";
+  };
+
+  function clear() { ctx.clearRect(0,0,overlay.width,overlay.height); }
+
+  function drawAt(clientX, clientY) {
+    const rect = overlay.getBoundingClientRect();
+    const xCss = clientX - rect.left;
+    const sx = overlay.width / rect.width;
+    const x = xCss * sx;
+
+    let best = 0, bestDx = Infinity;
+    for (let i=0;i<points.length;i++){
+      const dx = Math.abs(points[i].x - x);
+      if (dx < bestDx) { bestDx = dx; best = i; }
+    }
+    const p = points[best];
+    if (!p) return;
+
+    clear();
+
+    // crosshair
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(p.x + 0.5, 0);
+    ctx.lineTo(p.x + 0.5, overlay.height);
+    ctx.stroke();
+
+    // point
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.strokeStyle = "rgba(0,0,0,0.55)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 4.5, 0, Math.PI*2);
+    ctx.fill();
+    ctx.stroke();
+    
+  // Interactive crosshair + tooltip (hover / drag)
+  if (opts.interactive) {
+    setupInteractiveLineChart(canvas, points, {
+      valueLabel: opts.valueLabel || (opts.type === "pnl" ? "Cumulatieve PnL" : "Value"),
+    });
+  }
+ctx.restore();
+
+    const base = getPctBase();
+    const pct = (base && Number.isFinite(p.val)) ? (p.val / base * 100) : NaN;
+    const pctClass = Number.isFinite(pct) ? (pct >= 0 ? "pos" : "neg") : "";
+
+    tip.innerHTML =
+      `<div><b>${esc(p.label || "")}</b></div>` +
+      `<div>${esc(opts.valueLabel || "Value")}: <b>${esc(fmtMoney(p.val))}</b></div>` +
+      `<div class="pct ${pctClass}">Return: <b>${esc(fmtPct(pct))}</b></div>` +
+      (base ? `<div style="opacity:.75">Base: ${esc(base.toFixed(2))}</div>` :
+              `<div style="opacity:.75">Tip: long-press / right-click to set base</div>`);
+
+    tip.style.display = "block";
+
+    // position tooltip (CSS coords)
+    const tipPad = 10;
+    const tipW = tip.offsetWidth || 160;
+    const tipH = tip.offsetHeight || 60;
+
+    let left = (p.x / sx) + tipPad;
+    let top = (p.y / (overlay.height / rect.height)) - tipH - tipPad;
+
+    if (left + tipW > rect.width) left = (p.x / sx) - tipW - tipPad;
+    if (left < 0) left = 0;
+    if (top < 0) top = (p.y / (overlay.height / rect.height)) + tipPad;
+    if (top + tipH > rect.height) top = rect.height - tipH;
+
+    tip.style.left = left + "px";
+    tip.style.top = top + "px";
+  }
+
+  let raf = 0;
+  function onMove(e){
+    const pt = e.touches ? e.touches[0] : e;
+    if (!pt) return;
+    if (raf) cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => drawAt(pt.clientX, pt.clientY));
+  }
+  function onLeave(){
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+    clear();
+    tip.style.display = "none";
+  }
+
+  overlay.addEventListener("mousemove", onMove, {passive:true});
+  overlay.addEventListener("mouseleave", onLeave, {passive:true});
+  overlay.addEventListener("touchstart", onMove, {passive:true});
+  overlay.addEventListener("touchmove", onMove, {passive:true});
+  overlay.addEventListener("touchend", onLeave, {passive:true});
+
+  // mobile-friendly base setter
+  overlay.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    const current = localStorage.getItem("pnl_start_balance_usd") || "";
+    const v = prompt("Start balance (USD) for % return calc:", current);
+    if (v === null) return;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) {
+      localStorage.removeItem("pnl_start_balance_usd");
+      alert("Cleared start balance.");
+    } else {
+      localStorage.setItem("pnl_start_balance_usd", String(n));
+    }
+  });
+}
+
+
 function drawBarChart(canvas, buckets){
   const ctx=canvas.getContext("2d");
   const w=canvas.width, h=canvas.height;

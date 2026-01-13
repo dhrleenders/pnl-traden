@@ -103,6 +103,25 @@
   color: #eafff2;
 }
 
+
+/* --- Interactive chart crosshair + tooltip --- */
+.chartWrap { position: relative; }
+.chartOverlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:auto; }
+.chartTooltip{
+  position:absolute; z-index:5; pointer-events:none;
+  background: rgba(0,0,0,0.85);
+  border:1px solid rgba(255,255,255,0.18);
+  padding:8px 10px;
+  border-radius:10px;
+  font-size:12px;
+  line-height:1.2;
+  color:#fff;
+  white-space:nowrap;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+}
+.chartTooltip .pct.pos{ color: var(--green); }
+.chartTooltip .pct.neg{ color: var(--red); }
+
 </style>
 </head>
 <body>
@@ -214,7 +233,7 @@
             <span class="badge" id="countBadge">0 trades</span>
           </div>
         </div>
-        <canvas id="equityCanvas" width="1000" height="320"></canvas>
+        <div class="chartWrap"><canvas id="equityCanvas" width="1000" height="320"></canvas></div>
       </div>
     </section>
 
