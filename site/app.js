@@ -17,7 +17,6 @@ db.version(2).stores({
 });
 
 const state = {
-  openPositionUids: new Set(),
   fx: { usdToEur: null, asOf: null },
   currency: "USD",
   exchangeFilter: "ALL",
@@ -347,8 +346,6 @@ function normalizeApiRows(data){
       exchange: safeText(r.exchange || "KRAKEN"),
       symbol: safeText(r.symbol),
       marketType: safeText(r.marketType || "FUTURES"),
-      eventType: inferEventType(r),
-      positionUid: safeText(r.positionUid || ""),
       side: safeText(r.side || ""),
       qty: Number(r.qty || 0),
       price: Number(r.price || 0),
@@ -429,13 +426,6 @@ async function syncFromApiIntoDb(){
     const res = await fetch(DATA_URL, { cache:"no-store" });
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    // store open position UIDs for accurate winrate
-    try{
-      const uids = Array.isArray(data?.openPositionUids) ? data.openPositionUids.map(String) : [];
-      state.openPositionUids = new Set(uids);
-      localStorage.setItem('pnl_open_uids_v1', JSON.stringify(uids));
-    }catch{}
-
     const rows = normalizeApiRows(data);
     const r = await upsertTrades(rows);
     const total = await db.trades.count();
@@ -469,8 +459,10 @@ async function getFilteredTrades(){
 function aggregateKPIs(trades){
   const net=trades.reduce((s,t)=>s+(t.netPnlUsd||0),0);
   const fees=trades.reduce((s,t)=>s+(t.feesUsd||0),0);
-  const wr = computeWinrateMostAccurate(trades);
-  return { net, fees, wins: wr.wins, count: wr.total, winrate: wr.winrate };
+  const wins=trades.filter(t=>(t.netPnlUsd||0)>0).length;
+  const count=trades.length;
+  const winrate=count?wins/count:0;
+  return { net, fees, wins, count, winrate };
 }
 function buildEquitySeries(tradesAsc){
   let cum=0; const pts=[];
@@ -1083,12 +1075,6 @@ els.resetBtn.addEventListener("click", async()=>{
 });
 
 (async function init(){
-  // load cached open position UIDs (for accurate winrate)
-  try{
-    const cached = JSON.parse(localStorage.getItem('pnl_open_uids_v1')||'[]');
-    if (Array.isArray(cached)) state.openPositionUids = new Set(cached.map(String));
-  }catch{}
-
   await fetchFxRate();
   state.currency=els.currency.value;
   state.exchange=els.exchange.value;
@@ -1128,50 +1114,4 @@ els.resetBtn.addEventListener("click", async()=>{
     await syncFromApiIntoDb();
     await renderAll();
   }, REFRESH_MS);
-})()
-function inferEventType(r){
-  const et = safeText(r.eventType || "").toUpperCase();
-  if (et) return et;
-  const side = safeText(r.side||"").toLowerCase();
-  const notes = safeText(r.notes||"").toLowerCase();
-  if (side.includes("funding") || notes.includes("funding")) return "FUNDING";
-  if (side.includes("fee") || notes.includes("fee")) return "FEE";
-  return "TRADE";
-}
-
-function inferPositionUid(r){
-  const pu = safeText(r.positionUid || "");
-  if (pu) return pu;
-  // fallback: try to parse a UID-like token from notes
-  const n = safeText(r.notes||"");
-  const m = n.match(/[0-9a-fA-F]{8,}/);
-  return m ? m[0] : "";
-}
-
-function computeWinrateMostAccurate(rows){
-  // Winrate: per positionUid, only CLOSED positions, exclude funding/fees
-  const openSet = state.openPositionUids instanceof Set ? state.openPositionUids : new Set();
-  const byUid = new Map();
-
-  for (const r of rows){
-    const et = inferEventType(r);
-    if (et !== "TRADE") continue;
-
-    const uid = inferPositionUid(r);
-    if (!uid) continue;
-
-    if (!byUid.has(uid)) byUid.set(uid, { netExFunding: 0 });
-    const realized = Number(r.realizedPnlUsd||0);
-    const fees = Number(r.feesUsd||0);
-    // exclude funding from winrate:
-    byUid.get(uid).netExFunding += (realized - fees);
-  }
-
-  const closed = [...byUid.entries()].filter(([uid]) => !openSet.has(uid));
-  const total = closed.length;
-  const wins = closed.filter(([_, v]) => v.netExFunding > 0).length;
-  const winrate = total ? wins/total : 0;
-  return { wins, total, winrate };
-}
-
-;
+})();
