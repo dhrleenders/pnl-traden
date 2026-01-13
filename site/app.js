@@ -19,6 +19,7 @@ db.version(2).stores({
 const state = {
   fx: { usdToEur: null, asOf: null },
   currency: "USD",
+  exchangeFilter: "ALL",
   exchange: "ALL",
   marketType: "ALL",
   range: "1w",
@@ -36,10 +37,12 @@ const els = {
   dbBadge: document.getElementById("dbBadge"),
   exportBtn: document.getElementById("exportBtn"),
   resetBtn: document.getElementById("resetBtn"),
+  exPills: document.getElementById("exPills"),
 
   tabs: document.getElementById("tabs"),
   views: {
     dash: document.getElementById("view-dash"),
+    analyse: document.getElementById("view-analyse"),
     monthly: document.getElementById("view-monthly"),
     trades: document.getElementById("view-trades"),
     calc: document.getElementById("view-calc"),
@@ -49,6 +52,15 @@ const els = {
   kpiNet: document.getElementById("kpiNet"),
   kpiFees: document.getElementById("kpiFees"),
   kpiWinrate: document.getElementById("kpiWinrate"),
+  kpiToday: document.getElementById("kpiToday"),
+  kpi7d: document.getElementById("kpi7d"),
+  kpi30d: document.getElementById("kpi30d"),
+  analyseRangeBadge: document.getElementById("analyseRangeBadge"),
+  analyseWinrate: document.getElementById("analyseWinrate"),
+  analyseTrades: document.getElementById("analyseTrades"),
+  analyseAvg: document.getElementById("analyseAvg"),
+  analyseEquityCanvas: document.getElementById("analyseEquityCanvas"),
+  analyseDailyCanvas: document.getElementById("analyseDailyCanvas"),
   countBadge: document.getElementById("countBadge"),
   equityCanvas: document.getElementById("equityCanvas"),
   monthlyCanvas: document.getElementById("monthlyCanvas"),
@@ -209,6 +221,15 @@ function detectCsvType(headers){
   if(isKrakenFutures) return "KRAKEN_FUTURES_ACCOUNT_LOG";
   return "UNKNOWN";
 }
+
+
+function normExchange(x){ return (x||"").toString().trim().toUpperCase(); }
+function applyExchangeFilter(items){
+  const f = normExchange(state.exchangeFilter || "ALL");
+  if (f === "ALL") return items;
+  return items.filter(t => normExchange(t.exchange) === f);
+}
+
 
 function normalizeBlofin(objs){
   const out=[];
@@ -434,6 +455,26 @@ function monthlyBuckets(trades, nowRef){
   return months;
 }
 
+function dailyBuckets(trades, nowRef, daysBack=30){
+  const now = nowRef instanceof Date ? nowRef : new Date();
+  const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const buckets=[];
+  for(let i=daysBack-1;i>=0;i--){
+    const d = new Date(base.getTime());
+    d.setUTCDate(d.getUTCDate()-i);
+    const key = d.toISOString().slice(0,10);
+    buckets.push({ key, label: key, net: 0 });
+  }
+  const map=new Map(buckets.map(b=>[b.key,b]));
+  for(const t of trades){
+    const key = String(t.datetime||"").slice(0,10);
+    const b = map.get(key);
+    if (b) b.net += (t.netPnlUsd || 0);
+  }
+  return buckets;
+}
+
+
 // ---------- Charts ----------
 function clearCanvas(ctx){ ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height); }
 
@@ -591,14 +632,14 @@ function setKpi(el, valueText, goodBad=null, subText=null){
 async function renderAll(){
   const trades=await getFilteredTrades();
   const k=aggregateKPIs(trades);
-  els.summaryLine.textContent = `${k.count} trades • ${state.exchange}/${state.marketType} • ${state.range}`;
+  els.summaryLine.textContent = `${k.count} trades • ${state.exchangeFilter}/${state.marketType} • ${state.range}`;
 
   const netC=convertUsdToSelected(k.net);
   const feeC=convertUsdToSelected(k.fees);
 
-  setKpi(els.kpiNet, formatMoney(netC, convertedLabel()), netC>=0 ? "good":"bad");
-  setKpi(els.kpiFees, formatMoney(feeC, convertedLabel()));
-  setKpi(els.kpiWinrate, formatPct(k.winrate), null, `${k.wins} / ${k.count}`);
+  if (els.kpiNet) setKpi(els.kpiNet, formatMoney(netC, convertedLabel()), netC>=0 ? "good":"bad");
+  if (els.kpiFees) setKpi(els.kpiFees, formatMoney(feeC, convertedLabel()));
+  if (els.kpiWinrate) setKpi(els.kpiWinrate, formatPct(k.winrate), null, `${k.wins} / ${k.count}`);
 
   els.countBadge.textContent = `${k.count} trades`;
   els.tradeCount.textContent = `${k.count} trades`;
@@ -615,6 +656,52 @@ async function renderAll(){
   drawBarChart(els.monthlyCanvas, buckets);
   const net12=buckets.reduce((s,b)=>s+b.net,0);
   els.monthlyHint.textContent=`Som 12 maanden: ${formatMoney(net12, convertedLabel())}`;
+
+
+  // Analyse (fixed windows based on latest timestamp in filtered dataset, ignoring state.range)
+  try{
+    const allForAnalyse = applyExchangeFilter(await db.trades.toArray());
+    const analyseBase = allForAnalyse
+      .filter(t => (state.marketType==="ALL" || t.marketType===state.marketType))
+      .filter(t => (state.exchange==="ALL" || t.exchange===state.exchange));
+    analyseBase.sort((a,b)=>(a.datetime<b.datetime?-1:1));
+    const nowIso = analyseBase.length ? analyseBase[analyseBase.length-1].datetime : new Date().toISOString();
+    const now = new Date(nowIso);
+    const cutoffDays = (d)=> new Date(now.getTime() - d*24*3600*1000).toISOString();
+    const sumNet = (arr)=>arr.reduce((s,t)=>s+(t.netPnlUsd||0),0);
+    const inWindow = (d)=> analyseBase.filter(t=>t.datetime>=cutoffDays(d));
+    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+    const todayRows = analyseBase.filter(t=>t.datetime>=todayStart);
+    const rows7 = inWindow(7);
+    const rows30 = inWindow(30);
+    const netToday = convertUsdToSelected(sumNet(todayRows));
+    const net7 = convertUsdToSelected(sumNet(rows7));
+    const net30 = convertUsdToSelected(sumNet(rows30));
+
+    if (els.kpiToday) setKpi(els.kpiToday, formatMoney(netToday, convertedLabel()), netToday>=0?"good":"bad");
+    if (els.kpi7d) setKpi(els.kpi7d, formatMoney(net7, convertedLabel()), net7>=0?"good":"bad");
+    if (els.kpi30d) setKpi(els.kpi30d, formatMoney(net30, convertedLabel()), net30>=0?"good":"bad");
+
+    const wins = analyseBase.filter(t=>(t.netPnlUsd||0)>0).length;
+    const cnt = analyseBase.length;
+    const winrate = cnt? wins/cnt:0;
+    if (els.analyseWinrate) els.analyseWinrate.textContent = `${(winrate*100).toFixed(1)}% (${wins}/${cnt})`;
+    if (els.analyseTrades) els.analyseTrades.textContent = String(cnt);
+    if (els.analyseAvg) {
+      const avg = cnt ? convertUsdToSelected(sumNet(analyseBase))/cnt : 0;
+      els.analyseAvg.textContent = formatMoney(avg, convertedLabel());
+    }
+    if (els.analyseRangeBadge) els.analyseRangeBadge.textContent = `${state.exchangeFilter} • ${state.marketType}`;
+
+    // Analyse charts
+    const ptsAUsd = buildEquitySeries(analyseBase);
+    const ptsA = ptsAUsd.map(p=>({x:p.x,y:convertUsdToSelected(p.y)}));
+    if (els.analyseEquityCanvas) drawLineChart(els.analyseEquityCanvas, ptsA, { yLabel:`Cumulatief (${convertedLabel()})` });
+
+    const daily = dailyBuckets(analyseBase, now, 30).map(b=>({ ...b, net: convertUsdToSelected(b.net) }));
+    if (els.analyseDailyCanvas) drawBarChart(els.analyseDailyCanvas, daily, { labelMode:"DD-MM" });
+  }catch(e){ /* ignore */ }
+
 
   // Table
   const rows=trades.slice(0,500);
@@ -876,6 +963,19 @@ els.tabs.addEventListener("click",(e)=>{
   const t=e.target.closest(".tab"); if(!t) return;
   setActiveTab(t.dataset.tab);
 });
+
+// Sticky exchange pills
+if (els.exPills){
+  els.exPills.addEventListener("click", async (e)=>{
+    const b = e.target.closest(".ex-pill");
+    if (!b) return;
+    const ex = b.dataset.ex || "ALL";
+    state.exchangeFilter = ex;
+    localStorage.setItem("pnl_exchange_filter", ex);
+    [...els.exPills.querySelectorAll(".ex-pill")].forEach(x=>x.classList.toggle("active", x.dataset.ex===ex));
+    await renderAll();
+  });
+}
 els.currency.addEventListener("change", async()=>{ const prev=state.currency; const next=els.currency.value; convertCalculatorInputs(prev, next); state.currency=next; await renderAll(); calcCompute(); });
 els.exchange.addEventListener("change", async()=>{ state.exchange=els.exchange.value; await renderAll(); });
 els.marketType.addEventListener("change", async()=>{ state.marketType=els.marketType.value; await renderAll(); });
@@ -945,6 +1045,11 @@ els.resetBtn.addEventListener("click", async()=>{
   state.exchange=els.exchange.value;
   state.marketType=els.marketType.value;
   state.range=els.range.value;
+
+  state.exchangeFilter = localStorage.getItem("pnl_exchange_filter") || "ALL";
+  if (els.exPills){
+    [...els.exPills.querySelectorAll(".ex-pill")].forEach(x=>x.classList.toggle("active", x.dataset.ex===state.exchangeFilter));
+  }
 
   wireCalculator();
 
