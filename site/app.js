@@ -611,6 +611,25 @@ function drawLineChart(canvas, points, { yLabel = "" } = {}) {
     drawSegment(a, ip, aPos ? green : red);
     drawSegment(ip, b, bPos ? green : red);
   }
+
+  // Kraken-like crosshair + tooltip (amount + %) on hover/drag
+  try {
+    const baseVal = points.length ? (Number(points[0].y) || 0) : 0;
+    const pixelPoints = points.map(p => {
+      const t = new Date(p.x).getTime();
+      const val = Number(p.y) || 0;
+      const pct = baseVal ? ((val - baseVal) / Math.abs(baseVal)) * 100 : 0;
+      const label = new Date(p.x).toISOString().slice(0, 10);
+      return { x: X(t), y: Y(val), val, pct, label };
+    });
+    setupInteractiveLineChart(canvas, pixelPoints, {
+      valueLabel: yLabel || "Value",
+      formatValue: (v) => formatMoney(v),
+      formatExtra: (_v, pt) => `(${(pt?.pct ?? 0).toFixed(2)}%)`,
+    });
+  } catch (e) {
+    console.warn("crosshair setup failed", e);
+  }
 }
 
 
@@ -700,13 +719,7 @@ function setupInteractiveLineChart(baseCanvas, points, opts = {}) {
     ctx.fill();
     ctx.stroke();
     
-  // Interactive crosshair + tooltip (hover / drag)
-  if (opts.interactive) {
-    setupInteractiveLineChart(canvas, points, {
-      valueLabel: opts.valueLabel || (opts.type === "pnl" ? "Cumulatieve PnL" : "Value"),
-    });
-  }
-ctx.restore();
+    ctx.restore();
 
     const base = getPctBase();
     const pct = (base && Number.isFinite(p.val)) ? (p.val / base * 100) : NaN;
