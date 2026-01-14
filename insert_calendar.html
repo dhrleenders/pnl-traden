@@ -1,0 +1,45 @@
+
+      <!-- Calendar -->
+      <div class="card two" id="calCard">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <div>
+            <div style="font-weight:700">Kalender (Daily PnL)</div>
+            <div class="muted small">Groen = winst, rood = verlies, grijs = geen trades.</div>
+          </div>
+          <div class="row" style="gap:10px;align-items:center">
+            <select id="calMonth" class="select"></select>
+          </div>
+        </div>
+        <div class="calWrap">
+          <div class="cal">
+            <div class="calHead">
+              <div>Ma</div><div>Di</div><div>Wo</div><div>Do</div><div>Vr</div><div>Za</div><div>Zo</div>
+            </div>
+            <div id="calGrid" class="calGrid"></div>
+          </div>
+          <div class="calSummary">
+            <div class="calKpi">
+              <div class="muted small">Total PnL</div>
+              <div id="calTotalPnl" class="calBig">—</div>
+            </div>
+            <div class="calKpi">
+              <div class="muted small">Total PnL%</div>
+              <div id="calTotalPct" class="calBig">—</div>
+            </div>
+            <div class="calKpiRow">
+              <div class="calMini">
+                <div class="muted small">Winning days</div>
+                <div id="calWinDays" class="calNum">—</div>
+              </div>
+              <div class="calMini">
+                <div class="muted small">Losing days</div>
+                <div id="calLoseDays" class="calNum">—</div>
+              </div>
+              <div class="calMini">
+                <div class="muted small">Break-even</div>
+                <div id="calBeDays" class="calNum">—</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>

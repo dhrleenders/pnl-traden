@@ -1,0 +1,17 @@
+/* Calendar */
+.calWrap{display:grid;grid-template-columns:1fr 240px;gap:16px;margin-top:12px;align-items:start;}
+@media (max-width: 900px){.calWrap{grid-template-columns:1fr;}}
+.calHead{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin:10px 0 8px;}
+.calHead .d{font-size:12px;opacity:0.7;text-align:center;}
+.calGrid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;}
+.calDay{border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:10px 10px 8px;min-height:60px;background:rgba(255,255,255,0.03);}
+.calDay .n{font-weight:700;font-size:14px;}
+.calDay .v{margin-top:6px;font-weight:700;font-size:13px;}
+.calDay.pos{background:rgba(0,255,160,0.14);border-color:rgba(0,255,160,0.25);}
+.calDay.neg{background:rgba(255,80,120,0.14);border-color:rgba(255,80,120,0.25);}
+.calDay.zero{background:rgba(255,255,255,0.02);}
+.calDay.empty{background:transparent;border-color:transparent;}
+.calSummary{padding:12px;border:1px solid rgba(255,255,255,0.08);border-radius:16px;background:rgba(255,255,255,0.03);}
+.calSummary .row{justify-content:space-between;margin:10px 0;}
+.calSummary .label{opacity:0.75;font-size:12px;}
+.calSummary .value{font-weight:800;}
