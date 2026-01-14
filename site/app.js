@@ -1,4 +1,4 @@
-F// PnL Traden — local-first PWA (cloud-ready)
+// PnL Traden — local-first PWA (cloud-ready)
 // - Loads latest synced JSON from /data/pnl.json (Netlify/GitHub)
 // - Stores trades in IndexedDB (Dexie) so phone works offline
 // - Optional CSV imports (BloFin, Kraken trades.csv, Kraken Futures account log CSV)
