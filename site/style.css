@@ -1,3 +1,7 @@
-.dayCell.win{background:rgba(0,200,120,.25)}
-.dayCell.loss{background:rgba(255,80,80,.25)}
-.dayCell.be{background:rgba(160,160,160,.2)}
+
+body{margin:0;background:#0b0b0d;color:#fff;font-family:system-ui;}
+.topbar{position:sticky;top:0;z-index:999;background:rgba(10,10,12,.8);backdrop-filter:blur(10px);padding:10px}
+.topbarRow{display:flex;justify-content:space-between;align-items:center}
+.tabsRow{display:flex;gap:10px;margin-top:8px}
+.topbar.collapsed .tabsRow{display:none}
+.btnSmall{background:#222;color:#fff;border-radius:8px;padding:6px 10px}
