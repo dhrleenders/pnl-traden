@@ -264,256 +264,634 @@ function parseCsv(text){
       if (c === '"'){
         if (text[i+1] === '"'){ field+='"'; i+=2; continue; }
         inQuotes=false; i++; continue;
-      } else { field+=c; i++; continue; }
+      }
+      field+=c; i++; continue;
     } else {
       if (c === '"'){ inQuotes=true; i++; continue; }
       if (c === ','){ row.push(field); field=""; i++; continue; }
+      if (c === '\n'){ row.push(field); rows.push(row); row=[]; field=""; i++; continue; }
       if (c === '\r'){ i++; continue; }
-      if (c === '\n'){ row.push(field); rows.push(row); field=""; row=[]; i++; continue; }
       field+=c; i++; continue;
     }
   }
-  row.push(field); rows.push(row);
-  return rows.filter(r=>r.some(x=>String(x).trim()!==""));
+  if (field.length || row.length){ row.push(field); rows.push(row); }
+  return rows;
 }
-
 function rowsToObjects(rows){
-  const headers = rows[0].map(h=>String(h).trim());
-  const objs = rows.slice(1).map(r=>{
-    const o={};
-    headers.forEach((h,idx)=>{ o[h]=r[idx] ?? ""; });
-    return o;
-  });
+  const headers = rows[0].map((h,i)=>{ let t=(h??"").toString().trim(); if(i===0) t=t.replace(/^﻿/,""); return t; });
+  const objs=[];
+  for(let r=1;r<rows.length;r++){
+    const arr=rows[r];
+    if(arr.length===1 && arr[0].trim()==="") continue;
+    const obj={};
+    for(let c=0;c<headers.length;c++) obj[headers[c]]=(arr[c]??"").trim();
+    objs.push(obj);
+  }
   return { headers, objs };
 }
-
 function detectCsvType(headers){
-  const h = headers.map(x=>x.toLowerCase());
-  // BloFin order history export usually has "UID" and "Realized PnL" and "DateTime"
-  if (h.includes("uid") && h.includes("realized pnl") && h.includes("datetime")) return "BLOFIN_ORDER_HISTORY";
-  // Kraken spot trades export typically has "txid" or "ordertxid" and "pair" and "time"
-  if (h.includes("txid") && h.includes("pair") && (h.includes("time") || h.includes("date"))) return "KRAKEN_TRADES";
-  // Kraken futures account log has "new balance" etc
-  if (h.includes("new balance") && h.includes("funding rate") && h.includes("realized pnl")) return "KRAKEN_FUTURES_ACCOUNT_LOG";
+  const h=headers.map(x=>x.trim().replace(/^﻿/,""));
+  if(h.includes("Underlying Asset") && h.includes("Order Time") && h.includes("PNL") && h.includes("Fee")) return "BLOFIN_ORDER_HISTORY";
+  if(h.includes("txid") && h.includes("ordertype") && h.includes("pair") && h.includes("time")) return "KRAKEN_TRADES";
+  const isKrakenFutures = h.includes("uid") && h.includes("dateTime") && h.includes("type") && h.includes("change") && (h.includes("contract") || h.includes("symbol"));
+  if(isKrakenFutures) return "KRAKEN_FUTURES_ACCOUNT_LOG";
   return "UNKNOWN";
 }
 
+
+function normExchange(x){ return (x||"").toString().trim().toUpperCase(); }
+function applyExchangeFilter(items){
+  const f = normExchange(state.exchangeFilter || "ALL");
+  if (f === "ALL") return items;
+  return items.filter(t => normExchange(t.exchange) === f);
+}
+
+
 function normalizeBlofin(objs){
-  // We treat each row as a "closed order" trade-like record
-  return objs.map(o=>{
-    const dt = toIsoDateTimeFromBlofin(o["DateTime"] ?? o["dateTime"] ?? o["datetime"]);
-    const realized = parseNumber(o["Realized PnL"] ?? o["realized pnl"]);
-    const fee = parseNumber(o["Fee"] ?? o["fee"]);
-    const funding = parseNumber(o["Realized Funding"] ?? o["realized funding"]);
-    const net = realized - fee + funding;
-    const symbol = safeText(o["Symbol"] ?? o["symbol"]).toUpperCase();
-    const side = safeText(o["Type"] ?? o["type"]).toUpperCase();
-    const qty = parseNumber(o["Contract"] ?? o["contract"] ?? o["Qty"] ?? o["qty"]);
-    const price = parseNumber(o["Trade Price"] ?? o["trade price"] ?? o["price"]);
-    const key = `BLOFIN|${o["UID"] ?? o["uid"]}|${dt ?? ""}|${symbol}|${side}|${qty}|${price}`;
-    return {
-      datetime: dt ?? new Date().toISOString(),
-      exchange: "BLOFIN",
-      symbol,
-      marketType: "FUTURES",
-      side,
-      qty,
-      price,
-      realizedPnlUsd: realized,
-      feesUsd: fee,
-      fundingUsd: funding,
-      netPnlUsd: net,
-      notes: "BloFin order history csv",
-      tradeKey: key
-    };
-  }).filter(x=>x.datetime);
+  const out=[];
+  for(const o of objs){
+    if(safeText(o["Status"]).toLowerCase()!=="filled") continue;
+    const pnlRaw=safeText(o["PNL"]).trim();
+    if(!pnlRaw || pnlRaw==="--") continue;
+    const datetime=toIsoDateTimeFromBlofin(o["Order Time"]);
+    const symbol=safeText(o["Underlying Asset"]);
+    const sideRaw=safeText(o["Side"]);
+    const side=sideRaw.toLowerCase().includes("sell")?"SELL":"BUY";
+    const qty=parseNumber(o["Filled"]);
+    const price=parseNumber(o["Avg Fill"]) || parseNumber(o["Price"]);
+    const pnlUsd=parseNumber(o["PNL"]);
+    const feeUsd=Math.abs(parseNumber(o["Fee"]));
+    const fundingUsd=0;
+    const netUsd=pnlUsd-feeUsd+fundingUsd;
+    const tradeKey=`BLOFIN|${safeText(o["Order Time"])}|${symbol}|${sideRaw}|${qty}|${price}|${pnlUsd}|${feeUsd}`;
+    out.push({ datetime, exchange:"BLOFIN", symbol, marketType:"FUTURES", side, qty, price, realizedPnlUsd:pnlUsd, feesUsd:feeUsd, fundingUsd, netPnlUsd:netUsd, notes:safeText(o["Order Options"])||safeText(o["Status"])||"", tradeKey });
+  }
+  return out.filter(x=>x.datetime);
 }
 
 function normalizeKraken(objs){
-  // Kraken spot trades.csv has fields like: txid,ordertxid,pair,time,type,ordertype,price,cost,fee,vol,margin,misc,ledgers
-  return objs.map(o=>{
-    const dt = o["time"] ? new Date(o["time"]).toISOString() : (o["Time"] ? new Date(o["Time"]).toISOString() : null);
-    const symbol = safeText(o["pair"] ?? o["Pair"] ?? o["symbol"] ?? o["Symbol"]).toUpperCase();
-    const type = safeText(o["type"] ?? o["Type"]).toUpperCase(); // BUY/SELL
-    const qty = parseNumber(o["vol"] ?? o["Vol"] ?? o["volume"] ?? o["Volume"]);
-    const price = parseNumber(o["price"] ?? o["Price"]);
-    const fee = parseNumber(o["fee"] ?? o["Fee"]);
-    // For spot, realized pnl isn't in export. We'll treat net as negative fees only (or 0 if you prefer).
-    const net = -fee;
-    const key = `KRAKEN|${o["txid"] ?? o["Txid"] ?? ""}|${dt ?? ""}|${symbol}|${type}|${qty}|${price}`;
-    return {
-      datetime: dt ?? new Date().toISOString(),
-      exchange: "KRAKEN",
-      symbol,
-      marketType: "SPOT",
-      side: type,
-      qty,
-      price,
-      realizedPnlUsd: 0,
-      feesUsd: fee,
-      fundingUsd: 0,
-      netPnlUsd: net,
-      notes: "Kraken trades.csv",
-      tradeKey: key
-    };
-  });
+  const out=[];
+  for(const o of objs){
+    const datetime=o["time"]?toIsoFromUnixSeconds(o["time"]):null;
+    const symbol=safeText(o["pair"]||o["symbol"]||"");
+    const type=safeText(o["type"]||o["side"]||"");
+    const side=type.toLowerCase().includes("sell")?"SELL":"BUY";
+    const qty=parseNumber(o["vol"]||o["qty"]||o["volume"]);
+    const price=parseNumber(o["price"]||o["avgPrice"]);
+    const feeUsd=Math.abs(parseNumber(o["fee"]||o["cfee"]));
+    const netUsd=parseNumber(o["net"]||o["pnl"]||0);
+    const pnlUsd=parseNumber(o["pnl"] || (netUsd + feeUsd));
+    const fundingUsd=parseNumber(o["funding"]||0);
+    const netCalc=(pnlUsd||0)-feeUsd+fundingUsd;
+    const tradeKey=`KRAKEN|${safeText(o["txid"])}|${symbol}|${safeText(o["time"])}|${qty}|${price}|${netUsd}`;
+    out.push({ datetime, exchange:"KRAKEN", symbol, marketType:"FUTURES", side, qty, price, realizedPnlUsd:pnlUsd||0, feesUsd:feeUsd, fundingUsd, netPnlUsd:netUsd||netCalc, notes:safeText(o["txid"]||""), tradeKey });
+  }
+  return out.filter(x=>x.datetime);
 }
 
 function normalizeKrakenFuturesAccountLog(objs){
-  // Header example:
-  // uid,dateTime,account,type,symbol,contract,change,new balance,new average entry price,trade price,mark price,funding rate,realized pnl,fee,realized funding,collateral,conversion spread percentage,liquidation fee,position uid
-  return objs.map(o=>{
-    const dt = o["dateTime"] || o["datetime"] || o["DateTime"] || o["time"];
-    const iso = dt ? new Date(dt).toISOString() : null;
-    const symbol = safeText(o["symbol"] ?? o["Symbol"]).toLowerCase();
-    const type = safeText(o["type"] ?? o["Type"]).toUpperCase(); // e.g. FUTURES TRADE, FUNDING, LIQUIDATION...
-    const contract = parseNumber(o["contract"] ?? o["Contract"]);
-    const tradePrice = parseNumber(o["trade price"] ?? o["tradePrice"] ?? o["trade_price"]);
-    const realized = parseNumber(o["realized pnl"] ?? o["realizedPnl"] ?? o["realized_pnl"]);
-    const fee = parseNumber(o["fee"] ?? o["Fee"]);
-    const rf = parseNumber(o["realized funding"] ?? o["realizedFunding"] ?? o["realized_funding"]);
-    // Some rows can have funding rate but 0 realized funding, etc.
-    const net = realized - fee + rf;
-
-    const key = `KRAKEN|LOG|${o["uid"] ?? ""}|${iso ?? ""}|${symbol}|${type}|${contract}|${tradePrice}`;
-    return {
-      datetime: iso ?? new Date().toISOString(),
-      exchange: "KRAKEN",
-      symbol,
-      marketType: "FUTURES",
-      side: type,
-      qty: contract,
-      price: tradePrice,
-      realizedPnlUsd: realized,
-      feesUsd: fee,
-      fundingUsd: rf,
-      netPnlUsd: net,
-      notes: "Kraken futures account-log",
-      tradeKey: key,
-      newBalanceUsd: parseNumber(o["new balance"] ?? o["newBalance"] ?? o["new_balance"])
-    };
-  });
-}
-
-// ---------- DB / syncing ----------
-async function upsertTrades(trades){
-  let added=0, skipped=0;
-  for(const t of trades){
-    try{
-      const existing = await db.trades.get(t.tradeKey);
-      if(existing){
-        skipped++;
-      }else{
-        await db.trades.put(t);
-        added++;
-      }
-    }catch{
-      skipped++;
+  const out=[];
+  for(const o of objs){
+    const uid=safeText(o["uid"]||"").trim();
+    const dtStr=safeText(o["dateTime"]||o["datetime"]||"").trim();
+    if(!dtStr) continue;
+    const dt=dtStr.replace(" ","T");
+    const datetimeIso = dt.endsWith("Z")?dt:(dt+"Z");
+    const typeRaw=safeText(o["type"]||"").trim();
+    const type=typeRaw.toLowerCase();
+    const allowed=(type==="futures trade"||type==="funding rate change"||type==="futures liquidation"||type==="futures assignor");
+    if(!allowed) continue;
+    const contract=safeText(o["contract"]||"").trim();
+    const symbol=contract||safeText(o["symbol"]||"").trim();
+    const realizedPnlUsd=parseNumber(o["realized pnl"]||o["realized_pnl"]);
+    const feeUsd=Math.abs(parseNumber(o["fee"]));
+    const realizedFundingUsd=parseNumber(o["realized funding"]||o["realized_funding"]);
+    const liquidationFeeUsd=Math.abs(parseNumber(o["liquidation fee"]||o["liquidation_fee"]));
+    let fundingUsd=0;
+    if(type==="funding rate change"){
+      const changeUsd=parseNumber(o["change"]);
+      fundingUsd=realizedFundingUsd||changeUsd||0;
     }
+    const pnlUsd=(type==="funding rate change")?0:(realizedPnlUsd||0);
+    const feesTotal=(type==="funding rate change")?0:((feeUsd||0)+(liquidationFeeUsd||0));
+    const netUsd=pnlUsd-feesTotal+fundingUsd;
+    const tradeKey=uid?`KRAKENF_LOG|${uid}`:`KRAKENF_LOG|${datetimeIso}|${typeRaw}|${symbol}|${pnlUsd}|${feesTotal}|${fundingUsd}`;
+    out.push({ datetime:datetimeIso, exchange:"KRAKEN", symbol, marketType:"FUTURES", side:typeRaw.toUpperCase(), qty:0, price:parseNumber(o["trade price"]||o["trade_price"]||0), realizedPnlUsd:pnlUsd, feesUsd:feesTotal, fundingUsd, netPnlUsd:netUsd, notes:safeText(o["position uid"]||"")||safeText(typeRaw), tradeKey });
   }
-  return { added, skipped };
+  return out.filter(x=>x.datetime);
 }
 
-function normalizeJsonPayload(json){
-  if (json?.rows && Array.isArray(json.rows)){
-    return json.rows.map(r=>({
-      datetime: r.datetime,
-      exchange: r.exchange,
-      symbol: r.symbol,
-      marketType: r.marketType,
-      side: r.side,
-      qty: parseNumber(r.qty),
-      price: parseNumber(r.price),
-      realizedPnlUsd: parseNumber(r.realizedPnlUsd),
-      feesUsd: parseNumber(r.feesUsd),
-      fundingUsd: parseNumber(r.fundingUsd),
-      netPnlUsd: parseNumber(r.netPnlUsd),
-      notes: r.notes ?? "",
-      tradeKey: r.tradeKey ?? `${r.exchange}|${r.datetime}|${r.symbol}|${r.side}|${r.qty}|${r.price}`,
-      newBalanceUsd: parseNumber(r.newBalanceUsd ?? r.new_balance_usd ?? r.new_balance ?? r["new balance"])
-    }));
+// ---------- API JSON ingest ----------
+function normalizeApiRows(data){
+  if (Array.isArray(data?.rows)) {
+    const out = data.rows.map(r => ({
+      datetime: safeText(r.datetime),
+      exchange: safeText(r.exchange || "KRAKEN"),
+      symbol: safeText(r.symbol),
+      marketType: safeText(r.marketType || "FUTURES"),
+      side: safeText(r.side || ""),
+      qty: Number(r.qty || 0),
+      price: Number(r.price || 0),
+      realizedPnlUsd: Number(r.realizedPnlUsd || 0),
+      feesUsd: Number(r.feesUsd || 0),
+      fundingUsd: Number(r.fundingUsd || 0),
+      netPnlUsd: Number(r.netPnlUsd ?? (Number(r.realizedPnlUsd||0) - Number(r.feesUsd||0) + Number(r.fundingUsd||0))),
+      notes: safeText(r.notes || ""),
+      tradeKey: safeText(r.tradeKey || "")
+        }));
+    // Ensure tradeKey exists (some exports may omit it)
+    for (let i=0;i<out.length;i++){
+      if(!out[i].tradeKey){
+        out[i].tradeKey = `${out[i].exchange}|${out[i].symbol}|${out[i].datetime}|${out[i].netPnlUsd}|${i}`;
+      }
+    }
+    return out.filter(x => x.datetime);
+
   }
-  if (json?.closed_trades && Array.isArray(json.closed_trades)){
-    return json.closed_trades.map(r=>({
-      datetime: r.datetime ?? r.time ?? new Date().toISOString(),
-      exchange: r.exchange ?? "KRAKEN",
-      symbol: r.symbol ?? r.pair ?? "",
-      marketType: r.marketType ?? "FUTURES",
-      side: r.side ?? r.type ?? "",
-      qty: parseNumber(r.qty ?? r.volume),
-      price: parseNumber(r.price),
-      realizedPnlUsd: parseNumber(r.realizedPnlUsd ?? r.realizedPnl),
-      feesUsd: parseNumber(r.feesUsd ?? r.fee),
-      fundingUsd: parseNumber(r.fundingUsd ?? 0),
-      netPnlUsd: parseNumber(r.netPnlUsd ?? r.netPnl ?? 0),
-      notes: r.notes ?? "legacy",
-      tradeKey: r.tradeKey ?? `${r.exchange}|${r.datetime}|${r.symbol}|${r.side}|${r.qty}|${r.price}`,
-      newBalanceUsd: parseNumber(r.newBalanceUsd ?? r.new_balance_usd ?? r.new_balance ?? r["new balance"])
-    }));
+  // legacy support: closed_trades
+  const out=[];
+  for(const t of (data?.closed_trades||[])){
+    const datetime=t.exit_dt || t.entry_dt;
+    if(!datetime) continue;
+    const realizedPnlUsd=Number(t.realized_pnl||0);
+    const feesUsd=Number(t.fees||0);
+    const fundingUsd=Number(t.funding||0);
+    const netPnlUsd=Number(t.net_pnl ?? (realizedPnlUsd - feesUsd + fundingUsd));
+    const tradeKey=`KRAKENF_API|${safeText(t.entry_fill_id)}|${safeText(t.exit_fill_id)}|${safeText(t.symbol)}|${datetime}`;
+    out.push({
+      datetime,
+      exchange:"KRAKEN",
+      symbol:safeText(t.symbol),
+      marketType:"FUTURES",
+      side:safeText(t.direction),
+      qty:Number(t.qty||0),
+      price:Number(t.exit_price||t.entry_price||0),
+      realizedPnlUsd,
+      feesUsd,
+      fundingUsd,
+      netPnlUsd,
+      notes:`entry:${safeText(t.entry_fill_id)} exit:${safeText(t.exit_fill_id)}`,
+      tradeKey
+    });
   }
-  return [];
+  return out;
+}
+
+async function upsertTrades(rows){
+  // Ensure every row has a stable tradeKey so we never drop everything on mobile due to missing keys.
+  const normalized = rows.map((r, idx) => {
+    let tk = safeText(r.tradeKey || "");
+    if (!tk) {
+      // Fallback key based on deterministic fields
+      tk = [
+        safeText(r.exchange||""),
+        safeText(r.marketType||""),
+        safeText(r.symbol||""),
+        safeText(r.datetime||""),
+        String(Number(r.netPnlUsd||0)),
+        String(Number(r.feesUsd||0)),
+        String(Number(r.fundingUsd||0)),
+        String(idx)
+      ].join("|");
+    }
+    return { ...r, tradeKey: tk };
+  });
+
+  // tradeKey is primary key -> bulkPut overwrites, prevents duplicates on refresh
+  const valid = normalized.filter(r=>r.tradeKey);
+  if(valid.length) await db.trades.bulkPut(valid);
+  return { added: valid.length, skipped: normalized.length - valid.length };
 }
 
 async function syncFromApiIntoDb(){
   try{
     const res = await fetch(DATA_URL, { cache:"no-store" });
-    if(!res.ok) throw new Error("fetch failed");
-    const json = await res.json();
-    const trades = normalizeJsonPayload(json);
-    const r = await upsertTrades(trades);
-    const count = await db.trades.count();
-    const asof = json?.generated_at ? new Date(json.generated_at).toLocaleString("nl-NL") : "";
-    els.dbBadge.textContent = `Sync OK (+${r.added}) • totaal ${count}`;
-    if(asof) els.dbBadge.title = `Updated: ${asof}`;
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const rows = normalizeApiRows(data);
+    const r = await upsertTrades(rows);
+    const total = await db.trades.count();
+    els.dbBadge.textContent = `Sync OK (+${r.added}) • totaal ${total}`;
+    return { ok:true, total, ...r };
   }catch(e){
-    const count = await db.trades.count();
-    els.dbBadge.textContent = `Offline • lokaal ${count}`;
+    els.dbBadge.textContent = "Sync offline";
+    return { ok:false, err:String(e?.message||e) };
   }
 }
 
-// ---------- Filtering / KPIs ----------
+// ---------- Filtering / Aggregation ----------
 async function getFilteredTrades(){
-  const all = await db.trades.toArray();
-  const cutoff = rangeCutoffIso(state.range);
-  const search = (state.search || "").toLowerCase();
+  let items = await db.trades.toArray();
+  const nowRef = items.length ? new Date(items.reduce((m,t)=>(t.datetime>m?t.datetime:m), items[0].datetime)) : new Date();
+  const cutoff = rangeCutoffIso(state.range, nowRef);
+  if(cutoff) items = items.filter(t=>t.datetime>=cutoff);
+  if(state.exchange!=="ALL") items = items.filter(t=>t.exchange===state.exchange);
+  if(state.marketType!=="ALL") items = items.filter(t=>t.marketType===state.marketType);
+  if(state.search){
+    const q = state.search.toLowerCase();
+    items = items.filter(t =>
+      (t.symbol||"").toLowerCase().includes(q) ||
+      (t.notes||"").toLowerCase().includes(q) ||
+      (t.tradeKey||"").toLowerCase().includes(q)
+    );
+  }
+  items.sort((a,b)=>(a.datetime<b.datetime?1:-1));
+  return items;
+}
+// Like getFilteredTrades(), but ignores the selected time range/search so totals don’t jump when you switch 1w/1m/etc.
+async function getTradesForTotalKpi(){
+  let items = await db.trades.toArray();
 
-  return all.filter(t=>{
-    if (state.exchangeFilter && state.exchangeFilter !== "ALL" && (t.exchange || "").toUpperCase() !== state.exchangeFilter) return false;
-
-    if (state.exchange !== "ALL" && (t.exchange || "") !== state.exchange) return false;
-    if (state.marketType !== "ALL" && (t.marketType || "") !== state.marketType) return false;
-    if (cutoff && t.datetime < cutoff) return false;
-    if (search){
-      const blob = `${t.exchange} ${t.symbol} ${t.marketType} ${t.side} ${t.notes}`.toLowerCase();
-      if (!blob.includes(search)) return false;
-    }
-    return true;
-  });
+  // Respect exchange + marketType filters
+  if(state.exchangeFilter && state.exchangeFilter !== "ALL"){
+    items = items.filter(t => (t.exchange || '').toUpperCase() === state.exchangeFilter);
+  }
+  if(state.marketType && state.marketType !== "ALL"){
+    items = items.filter(t => (t.marketType || '').toUpperCase() === state.marketType);
+  }
+  return items;
 }
 
 function aggregateKPIs(trades){
-  const net = trades.reduce((a,t)=>a+parseNumber(t.netPnlUsd),0);
-  const fees = trades.reduce((a,t)=>a+parseNumber(t.feesUsd),0);
-  // winrate: count net>0 as win among all trades
-  const wins = trades.filter(t=>parseNumber(t.netPnlUsd)>0).length;
-  const count = trades.length || 1;
-  const winrate = wins / count;
-
-  // Today / 7d / 30d (UTC)
-  const now = new Date();
-  const startToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const start7d = new Date(startToday.getTime() - 7*24*3600*1000);
-  const start30d = new Date(startToday.getTime() - 30*24*3600*1000);
-
-  const today = trades.filter(t=> new Date(t.datetime) >= startToday).reduce((a,t)=>a+parseNumber(t.netPnlUsd),0);
-  const p7d = trades.filter(t=> new Date(t.datetime) >= start7d).reduce((a,t)=>a+parseNumber(t.netPnlUsd),0);
-  const p30d = trades.filter(t=> new Date(t.datetime) >= start30d).reduce((a,t)=>a+parseNumber(t.netPnlUsd),0);
-
-  return { net, fees, wins, count: trades.length, winrate, today, p7d, p30d };
+  const net=trades.reduce((s,t)=>s+(t.netPnlUsd||0),0);
+  const fees=trades.reduce((s,t)=>s+(t.feesUsd||0),0);
+  const wins=trades.filter(t=>(t.netPnlUsd||0)>0).length;
+  const count=trades.length;
+  const winrate=count?wins/count:0;
+  return { net, fees, wins, count, winrate };
+}
+function buildEquitySeries(tradesAsc){
+  let cum=0; const pts=[];
+  for(const t of tradesAsc){ cum += (t.netPnlUsd||0); pts.push({x:t.datetime,y:cum}); }
+  return pts;
+}
+function monthlyBuckets(trades, nowRef){
+  const now = nowRef instanceof Date ? nowRef : new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const months=[];
+  for(let i=11;i>=0;i--){
+    const d=addMonthsUTC(start.getUTCFullYear(), start.getUTCMonth(), -i);
+    const key=`${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
+    months.push({ key, label:key, net:0, fees:0, funding:0 });
+  }
+  const map=new Map(months.map(m=>[m.key,m]));
+  for(const t of trades){
+    const d=new Date(t.datetime);
+    const key=`${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
+    const m=map.get(key);
+    if(m){ m.net+=(t.netPnlUsd||0); m.fees+=(t.feesUsd||0); m.funding+=(t.fundingUsd||0); }
+  }
+  return months;
 }
 
+function dailyBuckets(trades, nowRef, daysBack=30){
+  const now = nowRef instanceof Date ? nowRef : new Date();
+  const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const buckets=[];
+  for(let i=daysBack-1;i>=0;i--){
+    const d = new Date(base.getTime());
+    d.setUTCDate(d.getUTCDate()-i);
+    const key = d.toISOString().slice(0,10);
+    buckets.push({ key, label: key, net: 0 });
+  }
+  const map=new Map(buckets.map(b=>[b.key,b]));
+  for(const t of trades){
+    const key = String(t.datetime||"").slice(0,10);
+    const b = map.get(key);
+    if (b) b.net += (t.netPnlUsd || 0);
+  }
+  return buckets;
+}
+
+
+// ---------- Charts ----------
+function clearCanvas(ctx){ ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height); }
+
+function drawLineChart(canvas, points, { yLabel = "", percentBase = null, percentMode = "pnl" } = {}) {
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (!points.length) {
+    ctx.fillStyle = "rgba(229,231,235,.8)";
+    ctx.font = "14px system-ui";
+    ctx.fillText("Geen data (wacht op sync of importeer).", 16, 32);
+    return;
+  }
+
+  const pad = 50;
+  const xs = points.map(p => new Date(p.x).getTime());
+  const ys = points.map(p => p.y);
+
+  const xmin = Math.min(...xs), xmax = Math.max(...xs);
+  const ymin = Math.min(...ys), ymax = Math.max(...ys);
+  const yPad = (ymax - ymin) * 0.08 || 1;
+  const y0 = ymin - yPad, y1 = ymax + yPad;
+
+  const X = (t) => pad + (t - xmin) / (xmax - xmin || 1) * (w - pad * 1.2);
+  const Y = (v) => h - pad - (v - y0) / (y1 - y0 || 1) * (h - pad * 1.4);
+
+  // grid
+  ctx.strokeStyle = "rgba(154,164,178,.15)";
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 5; i++) {
+    const gy = pad + i * (h - pad * 1.4) / 4;
+    ctx.beginPath();
+    ctx.moveTo(pad, gy);
+    ctx.lineTo(w - pad * 0.2, gy);
+    ctx.stroke();
+  }
+
+  // labels
+  ctx.fillStyle = "rgba(154,164,178,.8)";
+  ctx.font = "12px system-ui";
+  ctx.fillText(yLabel, 12, 18);
+
+  // zero line
+  const yZero = Y(0);
+  ctx.strokeStyle = "rgba(154,164,178,.35)";
+  ctx.beginPath();
+  ctx.moveTo(pad, yZero);
+  ctx.lineTo(w - pad * 0.2, yZero);
+  ctx.stroke();
+
+  // Always render the nicer "filled" style (similar to the Kraken app)
+  const fillArea = true;
+  const green = "rgba(34,197,94,0.95)";
+  const red = "rgba(239,68,68,0.95)";
+
+  function drawSegment(pA, pB, color) {
+    const x1 = X(new Date(pA.x).getTime());
+    const y1p = Y(pA.y);
+    const x2 = X(new Date(pB.x).getTime());
+    const y2p = Y(pB.y);
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1p);
+    ctx.lineTo(x2, y2p);
+    ctx.stroke();
+
+    if (fillArea) {
+      // crude opacity adjustment: keeps hue but makes it transparent
+      const fill = color.includes("34,197,94") ? "rgba(34,197,94,0.18)" : "rgba(239,68,68,0.18)";
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.moveTo(x1, yZero);
+      ctx.lineTo(x1, y1p);
+      ctx.lineTo(x2, y2p);
+      ctx.lineTo(x2, yZero);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const aPos = a.y >= 0;
+    const bPos = b.y >= 0;
+
+    if (aPos === bPos) {
+      drawSegment(a, b, aPos ? green : red);
+      continue;
+    }
+
+    // crossing: split at y=0 by linear interpolation
+    const t = (0 - a.y) / (b.y - a.y || 1);
+    const ax = new Date(a.x).getTime();
+    const bx = new Date(b.x).getTime();
+    const ix = ax + (bx - ax) * t;
+    const ip = { x: new Date(ix).toISOString(), y: 0 };
+
+    drawSegment(a, ip, aPos ? green : red);
+    drawSegment(ip, b, bPos ? green : red);
+  }
+
+  // Kraken-like crosshair + tooltip (amount + %) on hover/drag
+  try {
+    const baseVal = points.length ? (Number(points[0].y) || 0) : 0;
+    const pctBase = (Number.isFinite(percentBase) && Number(percentBase) > 0) ? Number(percentBase) : null;
+    const pixelPoints = points.map(p => {
+      const t = new Date(p.x).getTime();
+      const val = Number(p.y) || 0;
+      let pct = 0;
+      if (pctBase){
+        pct = (percentMode === "total") ? (((val - pctBase) / pctBase) * 100) : ((val / pctBase) * 100);
+      } else if (baseVal){
+        pct = ((val - baseVal) / Math.abs(baseVal)) * 100;
+      }
+      const label = new Date(p.x).toISOString().slice(0, 10);
+      return { x: X(t), y: Y(val), val, pct, label };
+    });
+    setupInteractiveLineChart(canvas, pixelPoints, {
+      valueLabel: yLabel || "Value",
+      formatValue: (v) => formatMoney(v),
+      formatExtra: (_v, pt) => `(${(pt?.pct ?? 0).toFixed(2)}%)`,
+    });
+  } catch (e) {
+    console.warn("crosshair setup failed", e);
+  }
+}
+
+
+
+// ------------------------------------------------------------
+// Interactive line chart (crosshair + tooltip) for canvas charts
+// ------------------------------------------------------------
+function setupInteractiveLineChart(baseCanvas, points, opts = {}) {
+  if (!baseCanvas || !points || points.length === 0) return;
+  const wrap = baseCanvas.parentElement;
+  if (wrap) wrap.classList.add("chartWrap");
+
+  let overlay = wrap ? wrap.querySelector("canvas.chartOverlay") : null;
+  if (!overlay) {
+    overlay = document.createElement("canvas");
+    overlay.className = "chartOverlay";
+    if (wrap) wrap.appendChild(overlay);
+  }
+  overlay.width = baseCanvas.width;
+  overlay.height = baseCanvas.height;
+  overlay.style.width = baseCanvas.style.width || "100%";
+  overlay.style.height = baseCanvas.style.height || "100%";
+
+  let tip = wrap ? wrap.querySelector(".chartTooltip") : null;
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.className = "chartTooltip";
+    tip.style.display = "none";
+    if (wrap) wrap.appendChild(tip);
+  }
+
+  const ctx = overlay.getContext("2d");
+
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+  }[c]));
+
+  function getPctBase() {
+    const raw = localStorage.getItem("pnl_start_balance_usd");
+    const n = raw ? Number(raw) : 0;
+    return Number.isFinite(n) ? n : 0;
+  }
+  const fmtMoney = (n) => {
+    if (!Number.isFinite(n)) return "—";
+    const cur = convertedLabel();
+    return formatMoney(n, cur);
+  };
+  const fmtPct = (p) => {
+    if (!Number.isFinite(p)) return "—";
+    const sign = p >= 0 ? "+" : "";
+    return sign + p.toFixed(2) + "%";
+  };
+
+  function clear() { ctx.clearRect(0,0,overlay.width,overlay.height); }
+
+  function drawAt(clientX, clientY) {
+    const rect = overlay.getBoundingClientRect();
+    const xCss = clientX - rect.left;
+    const sx = overlay.width / rect.width;
+    const x = xCss * sx;
+
+    let best = 0, bestDx = Infinity;
+    for (let i=0;i<points.length;i++){
+      const dx = Math.abs(points[i].x - x);
+      if (dx < bestDx) { bestDx = dx; best = i; }
+    }
+    const p = points[best];
+    if (!p) return;
+
+    clear();
+
+    // crosshair
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(p.x + 0.5, 0);
+    ctx.lineTo(p.x + 0.5, overlay.height);
+    ctx.stroke();
+
+    // point
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.strokeStyle = "rgba(0,0,0,0.55)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 4.5, 0, Math.PI*2);
+    ctx.fill();
+    ctx.stroke();
+    
+    ctx.restore();
+
+    const base = getPctBase();
+    const pct = (base && Number.isFinite(p.val)) ? (p.val / base * 100) : NaN;
+    const pctClass = Number.isFinite(pct) ? (pct >= 0 ? "pos" : "neg") : "";
+
+    tip.innerHTML =
+      `<div><b>${esc(p.label || "")}</b></div>` +
+      `<div>${esc(opts.valueLabel || "Value")}: <b>${esc(fmtMoney(p.val))}</b></div>` +
+      `<div class="pct ${pctClass}">Return: <b>${esc(fmtPct(pct))}</b></div>` +
+      (base ? `<div style="opacity:.75">Base: ${esc(base.toFixed(2))}</div>` :
+              `<div style="opacity:.75">Tip: long-press / right-click to set base</div>`);
+
+    tip.style.display = "block";
+
+    // position tooltip (CSS coords)
+    const tipPad = 10;
+    const tipW = tip.offsetWidth || 160;
+    const tipH = tip.offsetHeight || 60;
+
+    let left = (p.x / sx) + tipPad;
+    let top = (p.y / (overlay.height / rect.height)) - tipH - tipPad;
+
+    if (left + tipW > rect.width) left = (p.x / sx) - tipW - tipPad;
+    if (left < 0) left = 0;
+    if (top < 0) top = (p.y / (overlay.height / rect.height)) + tipPad;
+    if (top + tipH > rect.height) top = rect.height - tipH;
+
+    tip.style.left = left + "px";
+    tip.style.top = top + "px";
+  }
+
+  let raf = 0;
+  function onMove(e){
+    const pt = e.touches ? e.touches[0] : e;
+    if (!pt) return;
+    if (raf) cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => drawAt(pt.clientX, pt.clientY));
+  }
+  function onLeave(){
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+    clear();
+    tip.style.display = "none";
+  }
+
+  overlay.addEventListener("mousemove", onMove, {passive:true});
+  overlay.addEventListener("mouseleave", onLeave, {passive:true});
+  overlay.addEventListener("touchstart", onMove, {passive:true});
+  overlay.addEventListener("touchmove", onMove, {passive:true});
+  overlay.addEventListener("touchend", onLeave, {passive:true});
+
+  // mobile-friendly base setter
+  overlay.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    const current = localStorage.getItem("pnl_start_balance_usd") || "";
+    const v = prompt("Start balance (USD) for % return calc:", current);
+    if (v === null) return;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) {
+      localStorage.removeItem("pnl_start_balance_usd");
+      alert("Cleared start balance.");
+    } else {
+      localStorage.setItem("pnl_start_balance_usd", String(n));
+    }
+  });
+}
+
+
+function drawBarChart(canvas, buckets){
+  const ctx=canvas.getContext("2d");
+  const w=canvas.width, h=canvas.height;
+  clearCanvas(ctx);
+  if(!buckets.length) return;
+  const pad=50;
+  const vals=buckets.map(b=>b.net);
+  const vmax=Math.max(...vals,0);
+  const vmin=Math.min(...vals,0);
+  const span=(vmax-vmin)||1;
+  function Y(v){ return h-pad - (v-vmin)/span*(h-pad*1.4); }
+
+  ctx.strokeStyle="rgba(154,164,178,.15)";
+  ctx.lineWidth=1;
+  for(let i=0;i<5;i++){
+    const y=pad + i*(h-pad*1.4)/4;
+    ctx.beginPath(); ctx.moveTo(pad,y); ctx.lineTo(w-pad*0.2,y); ctx.stroke();
+  }
+
+  const barW=(w-pad*1.2)/buckets.length;
+  for(let i=0;i<buckets.length;i++){
+    const b=buckets[i];
+    const x=pad + i*barW + barW*0.15;
+    const bw=barW*0.7;
+    const y0=Y(0), yv=Y(b.net);
+    const top=Math.min(y0,yv);
+    const bh=Math.abs(y0-yv);
+    ctx.fillStyle=b.net>=0 ? "rgba(34,197,94,.85)" : "rgba(239,68,68,.85)";
+    ctx.fillRect(x, top, bw, bh);
+  }
+
+  ctx.fillStyle="rgba(154,164,178,.9)";
+  ctx.font="11px system-ui";
+  for(let i=0;i<buckets.length;i+=2){
+    const x=pad + i*barW + barW*0.1;
+    ctx.fillText(buckets[i].label.slice(2), x, h-18);
+  }
+}
+
+// ---------- Render ----------
 function setKpi(el, valueText, goodBad=null, subText=null){
-  if(!el) return;
   el.classList.remove("good","bad");
   if(goodBad==="good") el.classList.add("good");
   if(goodBad==="bad") el.classList.add("bad");
@@ -521,427 +899,161 @@ function setKpi(el, valueText, goodBad=null, subText=null){
   if(subText!==null) el.querySelector(".sub").textContent=subText;
 }
 
-// ---------- Charts ----------
-function buildEquitySeries(tradesAsc){
-  // Trades already filtered; compute cumulative net pnl (USD)
-  let cum=0;
-  const pts=[];
-  for(const t of tradesAsc){
-    cum += parseNumber(t.netPnlUsd);
-    pts.push({ x: new Date(t.datetime), y: cum, meta: t });
+async function renderAll(){
+  const trades=await getFilteredTrades();
+  const k=aggregateKPIs(trades);
+// Manual base (stortingen - opnames) per exchange filter
+const deposits = loadDeposits();
+const depositBaseUsd = depositsForCurrentExchange(deposits); // number or null
+const baseUsd = (typeof depositBaseUsd === "number" && isFinite(depositBaseUsd)) ? depositBaseUsd : 0;
+
+  els.summaryLine.textContent = `${k.count} trades • ${state.exchangeFilter}/${state.marketType} • ${state.range}`;
+
+  const netC=convertUsdToSelected(k.net);
+  const feeC=convertUsdToSelected(k.fees);
+  // Total value (manual deposits) should NOT change when you switch 1w/1m/etc.
+  const tradesAll = await getTradesForTotalKpi();
+  const kAll = aggregateKPIs(tradesAll);
+  const totalValueUsd = baseUsd + (kAll.net || 0);
+  const totalValueC = convertUsdToSelected(totalValueUsd);
+
+
+
+  if (els.kpiTotal) setKpi(els.kpiTotal, formatMoney(totalValueC, convertedLabel()), totalValueC>=0 ? "good":"bad", "(Stortingen - opnames) + Net PnL");
+  if (els.kpiNet) setKpi(els.kpiNet, formatMoney(netC, convertedLabel()), netC>=0 ? "good":"bad");
+  if (els.kpiFees) setKpi(els.kpiFees, formatMoney(feeC, convertedLabel()));
+  if (els.kpiWinrate) setKpi(els.kpiWinrate, formatPct(k.winrate), null, `${k.wins} / ${k.count}`);  els.tradeCount.textContent = `${k.count} trades`;
+
+// Equity / charts
+const tradesAsc=[...trades].sort((a,b)=>(a.datetime>b.datetime?1:-1));
+const ptsUsd=buildEquitySeries(tradesAsc);
+const baseUsdForSeries = baseUsd;
+
+// Choose chart series
+const seriesUsd = (state.chartMode === "total")
+  ? ptsUsd.map(p => ({ x: p.x, y: baseUsdForSeries + (p.y || 0) }))
+  : ptsUsd;
+
+const pts = seriesUsd.map(p => ({ x: p.x, y: convertUsdToSelected(p.y) }));
+const yLabel = (state.chartMode === "total")
+  ? `Totale waarde (${convertedLabel()})`
+  : `Cumulatief PnL (${convertedLabel()})`;
+
+// Percent base = deposits (converted)
+const pctBase = convertUsdToSelected(baseUsdForSeries);
+
+drawLineChart(els.equityCanvas, pts, { yLabel, percentBase: pctBase, percentMode: state.chartMode });
+
+if (els.dashChartTitle) els.dashChartTitle.textContent = (state.chartMode === "total") ? "Total chart" : "PnL chart";
+if (els.dashChartSub) {
+  els.dashChartSub.textContent = (state.chartMode === "total")
+    ? "Schatting: stortingen + cumulatieve PnL."
+    : "Cumulatieve Net PnL uit je trades/account-log.";
+}
+
+  // Monthly (view removed; keep as optional so older code doesn't crash)
+  if (els.monthlyCanvas && els.monthlyHint) {
+    const nowRef = trades.length ? new Date(trades[0].datetime) : new Date();
+    const bucketsUsd = monthlyBuckets(trades, nowRef);
+    const buckets = bucketsUsd.map(b => ({ ...b, net: convertUsdToSelected(b.net) }));
+    drawBarChart(els.monthlyCanvas, buckets);
+    const net12 = buckets.reduce((s, b) => s + b.net, 0);
+    els.monthlyHint.textContent = `Som 12 maanden: ${formatMoney(net12, convertedLabel())}`;
   }
-  return pts;
-}
 
-function niceTimeLabels(points, range){
-  // Build x-axis labels depending on selected range
-  // 24h: hours
-  // 1w: weekdays
-  // 1m: dd-MM
-  // 1y: months
-  const xs = points.map(p=>p.x);
-  if(xs.length===0) return [];
-  const fmtHour = new Intl.DateTimeFormat("nl-NL", { hour:"2-digit" });
-  const fmtWeek = new Intl.DateTimeFormat("nl-NL", { weekday:"short" });
-  const fmtDay = new Intl.DateTimeFormat("nl-NL", { day:"2-digit", month:"2-digit" });
-  const fmtMonth = new Intl.DateTimeFormat("nl-NL", { month:"short" });
 
-  const map = {
-    "24h": fmtHour,
-    "1w": fmtWeek,
-    "2w": fmtDay,
-    "1m": fmtDay,
-    "30d": fmtDay,
-    "3m": fmtDay,
-    "6m": fmtMonth,
-    "1y": fmtMonth,
-    "12m": fmtMonth,
-    "all": fmtMonth
-  };
-  const fmt = map[range] || fmtDay;
-  return xs.map(d=>fmt.format(d));
-}
+  // Analyse (fixed windows based on latest timestamp in filtered dataset, ignoring state.range)
+  try{
+    const allForAnalyse = applyExchangeFilter(await db.trades.toArray());
+    const analyseBase = allForAnalyse
+      .filter(t => (state.marketType==="ALL" || t.marketType===state.marketType))
+      .filter(t => (state.exchange==="ALL" || t.exchange===state.exchange));
+    analyseBase.sort((a,b)=>(a.datetime<b.datetime?-1:1));
+    const nowIso = analyseBase.length ? analyseBase[analyseBase.length-1].datetime : new Date().toISOString();
+    const now = new Date(nowIso);
+    const cutoffDays = (d)=> new Date(now.getTime() - d*24*3600*1000).toISOString();
+    const sumNet = (arr)=>arr.reduce((s,t)=>s+(t.netPnlUsd||0),0);
+    const inWindow = (d)=> analyseBase.filter(t=>t.datetime>=cutoffDays(d));
+    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+    const todayRows = analyseBase.filter(t=>t.datetime>=todayStart);
+    const rows7 = inWindow(7);
+    const rows30 = inWindow(30);
+    const netToday = convertUsdToSelected(sumNet(todayRows));
+    const net7 = convertUsdToSelected(sumNet(rows7));
+    const net30 = convertUsdToSelected(sumNet(rows30));
 
-function makeCrosshair(canvas, points, yLabelCb){
-  // Adds touch/mouse crosshair + value bubble
-  const ctx = canvas.getContext("2d");
-  let active = false;
-  let idx = -1;
+    if (els.kpiToday) setKpi(els.kpiToday, formatMoney(netToday, convertedLabel()), netToday>=0?"good":"bad");
+    if (els.kpi7d) setKpi(els.kpi7d, formatMoney(net7, convertedLabel()), net7>=0?"good":"bad");
+    if (els.kpi30d) setKpi(els.kpi30d, formatMoney(net30, convertedLabel()), net30>=0?"good":"bad");
 
-  function findNearest(xPx){
-    if(points.length===0) return -1;
-    // x positions are stored in points._px by drawLineChart
-    let best=-1, bestDist=1e9;
-    for(let i=0;i<points.length;i++){
-      const px = points[i]._px;
-      const dist = Math.abs(px - xPx);
-      if(dist<bestDist){ bestDist=dist; best=i; }
+    const wins = analyseBase.filter(t=>(t.netPnlUsd||0)>0).length;
+    const cnt = analyseBase.length;
+    const winrate = cnt? wins/cnt:0;
+    if (els.analyseWinrate) els.analyseWinrate.textContent = `${(winrate*100).toFixed(1)}% (${wins}/${cnt})`;
+    if (els.analyseTrades) els.analyseTrades.textContent = String(cnt);
+    if (els.analyseAvg) {
+      const avg = cnt ? convertUsdToSelected(sumNet(analyseBase))/cnt : 0;
+      els.analyseAvg.textContent = formatMoney(avg, convertedLabel());
     }
-    return best;
-  }
+    if (els.analyseRangeBadge) els.analyseRangeBadge.textContent = `${state.exchangeFilter} • ${state.marketType}`;
 
-  function drawOverlay(){
-    if(!active || idx<0 || idx>=points.length) return;
-    const p = points[idx];
-    // vertical line
-    ctx.save();
-    ctx.strokeStyle = "rgba(255,255,255,0.35)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(p._px, 0);
-    ctx.lineTo(p._px, canvas.height);
-    ctx.stroke();
+    // Analyse charts
+    const ptsAUsd = buildEquitySeries(analyseBase);
+    const ptsA = ptsAUsd.map(p=>({x:p.x,y:convertUsdToSelected(p.y)}));
+    if (els.analyseEquityCanvas) drawLineChart(els.analyseEquityCanvas, ptsA, { yLabel:`Cumulatief (${convertedLabel()})` });
 
-    // dot
-    ctx.fillStyle = "rgba(255,255,255,0.95)";
-    ctx.beginPath();
-    ctx.arc(p._px, p._py, 3.5, 0, Math.PI*2);
-    ctx.fill();
+    const daily = dailyBuckets(analyseBase, now, 30).map(b=>({ ...b, net: convertUsdToSelected(b.net) }));
+    if (els.analyseDailyCanvas) drawBarChart(els.analyseDailyCanvas, daily, { labelMode:"DD-MM" });
+  }catch(e){ /* ignore */ }
 
-    // bubble
-    const text = yLabelCb(p);
-    ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
-    const pad = 6;
-    const w = ctx.measureText(text).width + pad*2;
-    const h = 22;
-    let bx = Math.min(canvas.width - w - 6, Math.max(6, p._px - w/2));
-    let by = Math.max(6, p._py - h - 10);
 
-    ctx.fillStyle = "rgba(0,0,0,0.75)";
-    ctx.strokeStyle = "rgba(255,255,255,0.25)";
-    ctx.lineWidth = 1;
-    roundRect(ctx, bx, by, w, h, 8);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = "white";
-    ctx.textBaseline = "middle";
-    ctx.fillText(text, bx+pad, by+h/2);
-    ctx.restore();
-  }
-
-  function handleMove(clientX){
-    const r = canvas.getBoundingClientRect();
-    const x = clientX - r.left;
-    idx = findNearest(x);
-    active = true;
-  }
-
-  function clear(){
-    active=false; idx=-1;
-  }
-
-  canvas.addEventListener("mousemove", (e)=>{
-    handleMove(e.clientX);
-  });
-  canvas.addEventListener("mouseleave", clear);
-
-  canvas.addEventListener("touchstart", (e)=>{
-    if(e.touches?.[0]) handleMove(e.touches[0].clientX);
-    e.preventDefault();
-  }, { passive:false });
-  canvas.addEventListener("touchmove", (e)=>{
-    if(e.touches?.[0]) handleMove(e.touches[0].clientX);
-    e.preventDefault();
-  }, { passive:false });
-  canvas.addEventListener("touchend", clear);
-
-  return { drawOverlay, clear };
-}
-
-function roundRect(ctx, x, y, w, h, r){
-  ctx.beginPath();
-  ctx.moveTo(x+r, y);
-  ctx.arcTo(x+w, y, x+w, y+h, r);
-  ctx.arcTo(x+w, y+h, x, y+h, r);
-  ctx.arcTo(x, y+h, x, y, r);
-  ctx.arcTo(x, y, x+w, y, r);
-  ctx.closePath();
-}
-
-function drawLineChart(canvas, points, opts){
-  const ctx = canvas.getContext("2d");
-  const w = canvas.width = canvas.clientWidth * devicePixelRatio;
-  const h = canvas.height = canvas.clientHeight * devicePixelRatio;
-  ctx.clearRect(0,0,w,h);
-  ctx.scale(devicePixelRatio, devicePixelRatio);
-
-  const padding = 28;
-  const innerW = canvas.clientWidth - padding*2;
-  const innerH = canvas.clientHeight - padding*2;
-
-  // Prepare scale
-  const ys = points.map(p=>p.y);
-  const minY = Math.min(...ys, 0);
-  const maxY = Math.max(...ys, 0);
-  const span = (maxY - minY) || 1;
-
-  function xToPx(i){ return padding + (i/(Math.max(points.length-1,1))) * innerW; }
-  function yToPy(y){
-    return padding + (1 - (y - minY)/span) * innerH;
-  }
-
-  // Store pixel positions for crosshair
-  points.forEach((p,i)=>{
-    p._px = xToPx(i);
-    p._py = yToPy(p.y);
-  });
-
-  // grid
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = "rgba(255,255,255,0.06)";
-  for(let g=0; g<=4; g++){
-    const y = padding + (g/4)*innerH;
-    ctx.beginPath(); ctx.moveTo(padding,y); ctx.lineTo(padding+innerW,y); ctx.stroke();
-  }
-
-  // Determine stroke based on direction if requested
-  let stroke = opts?.stroke || "rgba(0, 220, 120, 0.95)";
-  if (opts?.directional){
-    const dy = points.length>=2 ? (points[points.length-1].y - points[0].y) : 0;
-    stroke = dy>=0 ? "rgba(0, 220, 120, 0.95)" : "rgba(255, 80, 80, 0.95)";
-  }
-
-  // area fill
-  if(opts?.fill){
-    ctx.beginPath();
-    points.forEach((p,i)=>{
-      if(i===0) ctx.moveTo(p._px, p._py);
-      else ctx.lineTo(p._px, p._py);
-    });
-    // close to bottom
-    ctx.lineTo(points[points.length-1]._px, padding+innerH);
-    ctx.lineTo(points[0]._px, padding+innerH);
-    ctx.closePath();
-    ctx.fillStyle = opts.fill;
-    ctx.fill();
-  }
-
-  // line
-  ctx.beginPath();
-  points.forEach((p,i)=>{
-    if(i===0) ctx.moveTo(p._px, p._py);
-    else ctx.lineTo(p._px, p._py);
-  });
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = (opts?.lineWidth || 3);
-  ctx.stroke();
-
-  // x labels (sparse)
-  const labels = opts?.xLabels || [];
-  ctx.fillStyle = "rgba(255,255,255,0.55)";
-  ctx.font = "11px system-ui, -apple-system, Segoe UI, Roboto, Arial";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "top";
-  const steps = Math.min(5, points.length);
-  for(let i=0;i<steps;i++){
-    const idx = Math.round(i*(points.length-1)/(steps-1 || 1));
-    const p = points[idx];
-    const lab = labels[idx] ?? "";
-    ctx.fillText(lab, p._px, padding+innerH+6);
-  }
-
-  // y label
-  if(opts?.yLabel){
-    ctx.save();
-    ctx.translate(10, canvas.clientHeight/2);
-    ctx.rotate(-Math.PI/2);
-    ctx.fillStyle="rgba(255,255,255,0.45)";
-    ctx.font="12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
-    ctx.textAlign="center";
-    ctx.fillText(opts.yLabel, 0, 0);
-    ctx.restore();
-  }
-}
-
-function renderTradesTable(trades){
-  if(!els.tradeRows) return;
-  els.tradeRows.innerHTML = "";
-  const frag=document.createDocumentFragment();
-  const sorted=[...trades].sort((a,b)=>a.datetime<b.datetime?1:-1).slice(0,250);
-  for(const t of sorted){
-    const tr=document.createElement("tr");
-    tr.innerHTML = `
-      <td>${new Date(t.datetime).toLocaleString("nl-NL")}</td>
+  // Table
+  const rows=trades.slice(0,500);
+  els.tradeRows.innerHTML = rows.map(t=>{
+    const dt=new Date(t.datetime);
+    const dtLabel=dt.toLocaleString("nl-NL",{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});
+    const fees=convertUsdToSelected(t.feesUsd||0);
+    const pnl=convertUsdToSelected(t.realizedPnlUsd||0);
+    const net=convertUsdToSelected(t.netPnlUsd||0);
+    return `<tr>
+      <td class="mono">${dtLabel}</td>
       <td>${t.exchange}</td>
       <td>${t.symbol}</td>
       <td>${t.marketType}</td>
       <td>${t.side}</td>
-      <td class="${pnlClass(t.netPnlUsd)}">${formatMoney(convertUsdToSelected(t.netPnlUsd), convertedLabel())}</td>
-    `;
-    frag.appendChild(tr);
-  }
-  els.tradeRows.appendChild(frag);
-  els.tradeCount.textContent = `${trades.length} trades`;
+      <td class="right mono">${Number(t.qty||0).toFixed(4)}</td>
+      <td class="right mono">${Number(t.price||0).toFixed(4)}</td>
+      <td class="right mono">${formatMoney(fees, convertedLabel())}</td>
+      <td class="right mono ${pnlClass(pnl)}">${formatMoney(pnl, convertedLabel())}</td>
+      <td class="right mono ${pnlClass(net)}">${formatMoney(net, convertedLabel())}</td>
+      <td class="mono muted">${safeText(t.notes).slice(0,40)}</td>
+    </tr>`;
+  }).join("");
 }
 
-// ---------- Render ----------
-async function renderAll(){
-  const trades=await getFilteredTrades();
-  const k=aggregateKPIs(trades);
-
-  // Manual base = (stortingen - opnames) per exchange filter
-  const depositsObj = loadDeposits();
-  const depositBaseUsd = depositsForCurrentExchange(depositsObj); // number
-
-  const baseUsd = (typeof depositBaseUsd === "number" && isFinite(depositBaseUsd)) ? depositBaseUsd : 0;
-
-  els.summaryLine.textContent = `${k.count} trades • ${state.exchangeFilter}/${state.marketType} • ${state.range}`;
-  // KPIs
-  const netC=convertUsdToSelected(k.net);
-  const feeC=convertUsdToSelected(k.fees);
-  const baseC=convertUsdToSelected(baseUsd);
-  const totalC=convertUsdToSelected(baseUsd + k.net);
-
-  // Totale waarde = (stortingen - opnames) + Net PnL
-  if (els.kpiTotal) {
-    const goodBad = (typeof totalC === "number" && isFinite(totalC) && totalC>=0) ? "good" : "bad";
-    setKpi(
-      els.kpiTotal,
-      formatMoney(isFinite(totalC) ? totalC : 0, convertedLabel()),
-      goodBad,
-      `Basis: ${formatMoney(isFinite(baseC) ? baseC : 0, convertedLabel())}`
-    );
-  }
-
-  if (els.kpiNet) setKpi(els.kpiNet, formatMoney(netC, convertedLabel()), netC>=0?"good":"bad");
-  if (els.kpiFees) setKpi(els.kpiFees, formatMoney(feeC, convertedLabel()));
-  if (els.kpiWinrate) setKpi(els.kpiWinrate, formatPct(k.winrate), null, `${k.wins} wins / ${k.count}`);
-  if (els.kpiToday) setKpi(els.kpiToday, formatMoney(convertUsdToSelected(k.today), convertedLabel()), k.today>=0?"good":"bad");
-  if (els.kpi7d) setKpi(els.kpi7d, formatMoney(convertUsdToSelected(k.p7d), convertedLabel()), k.p7d>=0?"good":"bad");
-  if (els.kpi30d) setKpi(els.kpi30d, formatMoney(convertUsdToSelected(k.p30d), convertedLabel()), k.p30d>=0?"good":"bad");
-
-  // Trades table
-  renderTradesTable(trades);
-
-  // Equity / charts
-  const tradesAsc=[...trades].sort((a,b)=>(a.datetime>b.datetime?1:-1));
-  const ptsUsd=buildEquitySeries(tradesAsc);
-  const baseUsdForSeries = baseUsd;
-
-  // choose chart series
-  const seriesUsd = (state.chartMode === "total")
-    ? ptsUsd.map(p=>({ x: p.x, y: baseUsdForSeries + (p.y || 0) }))
-    : ptsUsd;
-
-  const pts = seriesUsd.map(p => ({ x: p.x, y: convertUsdToSelected(p.y) }));
-  const yLabel = (state.chartMode === "total")
-    ? `Totale waarde (${convertedLabel()})`
-    : `Cumulatief (${convertedLabel()})`;
-
-  // Title/sub
-  if (els.dashChartTitle) els.dashChartTitle.textContent = (state.chartMode === "total") ? "Total chart" : "PnL chart";
-  if (els.dashChartSub) els.dashChartSub.textContent = (state.chartMode === "total")
-    ? "Basis (stortingen - opnames) + cumulatieve Net PnL."
-    : "Cumulatieve Net PnL per trade/order.";
-
-  // Draw main chart with filled area + thicker line; green/red directional for PnL chart
-  if (els.equityCanvas){
-    const labels = niceTimeLabels(pts, state.range);
-    drawLineChart(els.equityCanvas, pts, {
-      yLabel,
-      xLabels: labels,
-      lineWidth: 5,
-      fill: "rgba(0, 220, 120, 0.10)",
-      directional: (state.chartMode === "pnl")
-    });
-
-    // Crosshair (amount + percentage vs base)
-    const cross = makeCrosshair(els.equityCanvas, pts, (p)=>{
-      const amount = formatMoney(p.y, convertedLabel());
-      let pct = "";
-      if (state.chartMode === "pnl" && baseUsdForSeries > 0){
-        const baseSel = convertUsdToSelected(baseUsdForSeries);
-        const perc = baseSel ? (p.y / baseSel) : 0;
-        pct = ` • ${formatPct(perc)}`;
-      } else if (state.chartMode === "total" && baseUsdForSeries > 0){
-        const baseSel = convertUsdToSelected(baseUsdForSeries);
-        const perc = baseSel ? ((p.y - baseSel) / baseSel) : 0;
-        pct = ` • ${formatPct(perc)}`;
-      }
-      return `${amount}${pct}`;
-    });
-
-    // re-draw overlay on move: easiest approach: hook into events by redrawing chart on RAF
-    let raf=0;
-    const redraw = ()=>{
-      drawLineChart(els.equityCanvas, pts, {
-        yLabel,
-        xLabels: labels,
-        lineWidth: 5,
-        fill: "rgba(0, 220, 120, 0.10)",
-        directional: (state.chartMode === "pnl")
-      });
-      cross.drawOverlay();
-      raf=0;
-    };
-    const schedule = ()=>{ if(!raf) raf=requestAnimationFrame(redraw); };
-
-    els.equityCanvas.addEventListener("mousemove", schedule);
-    els.equityCanvas.addEventListener("touchstart", schedule, {passive:false});
-    els.equityCanvas.addEventListener("touchmove", schedule, {passive:false});
-    els.equityCanvas.addEventListener("mouseleave", schedule);
-    els.equityCanvas.addEventListener("touchend", schedule);
-  }
-
-  // Analyse view can re-use same style if desired (keep simple for now)
-  if (els.analyseEquityCanvas){
-    const labels = niceTimeLabels(pts, state.range);
-    drawLineChart(els.analyseEquityCanvas, pts, {
-      yLabel,
-      xLabels: labels,
-      lineWidth: 5,
-      fill: "rgba(0, 220, 120, 0.10)",
-      directional: (state.chartMode === "pnl")
-    });
-  }
-}
 
 // ---------- Calculator ----------
-function setKpiText(el, valueText, subText){
-  if(!el) return;
-  el.querySelector(".value").textContent = valueText;
-  el.querySelector(".sub").textContent = subText;
-}
-function calcColorRR(rr){
-  if(!isFinite(rr)) return "";
-  if(rr < 2) return "bad";
-  if(rr < 3) return "warn";
-  return "good";
-}
-function convertCalculatorInputs(prevCur, nextCur){
-  // Convert input values if they are money-like and user toggles USD/EUR
-  if(prevCur === nextCur) return;
-  const r = state.fx.usdToEur;
-  if(!r) return;
-  const mul = (prevCur==="USD" && nextCur==="EUR") ? r : (prevCur==="EUR" && nextCur==="USD") ? (1/r) : 1;
-  const fields = [els.calcEntry, els.calcStop, els.calcTP, els.calcRisk, els.calcBalance];
-  fields.forEach(f=>{
-    if(!f) return;
-    const n = parseNumber(f.value);
-    if(!n) return;
-    f.value = (n * mul).toFixed(4);
-  });
-}
+const CALC_LS_KEY = "pnl_calc_v1";
 
 function loadCalcDefaults(){
   try{
-    const raw = localStorage.getItem("pnl_calc_v1");
+    const raw = localStorage.getItem(CALC_LS_KEY);
     if(!raw) return;
     const o = JSON.parse(raw);
     if (els.calcSide && o.side) els.calcSide.value = o.side;
-    if (els.calcEntry && o.entry) els.calcEntry.value = o.entry;
-    if (els.calcStop && o.stop) els.calcStop.value = o.stop;
-    if (els.calcTP && o.tp) els.calcTP.value = o.tp;
-    if (els.calcRisk && o.risk) els.calcRisk.value = o.risk;
-    if (els.calcBalance && o.balance) els.calcBalance.value = o.balance;
-    if (els.calcRiskPct && o.riskPct) els.calcRiskPct.value = o.riskPct;
-    if (els.calcUsePct) els.calcUsePct.checked = !!o.usePct;
-    if (els.calcContractSize && o.contractSize) els.calcContractSize.value = o.contractSize;
-    if (els.calcLev && o.lev) els.calcLev.value = o.lev;
-    if (els.calcFeePct && o.feePct) els.calcFeePct.value = o.feePct;
+    if (els.calcEntry && o.entry !== undefined) els.calcEntry.value = o.entry;
+    if (els.calcStop && o.stop !== undefined) els.calcStop.value = o.stop;
+    if (els.calcTP && o.tp !== undefined) els.calcTP.value = o.tp;
+    if (els.calcBalance && o.balance !== undefined) els.calcBalance.value = o.balance;
+    if (els.calcRiskPct && o.riskPct !== undefined) els.calcRiskPct.value = o.riskPct;
+    if (els.calcUsePct && o.usePct !== undefined) els.calcUsePct.checked = !!o.usePct;
+    if (els.calcRisk && o.risk !== undefined) els.calcRisk.value = o.risk;
+    if (els.calcContractSize && o.contractSize !== undefined) els.calcContractSize.value = o.contractSize;
+    if (els.calcLev && o.lev !== undefined) els.calcLev.value = o.lev;
+    if (els.calcFeePct && o.feePct !== undefined) els.calcFeePct.value = o.feePct;
   }catch{}
 }
+
 function saveCalcDefaults(){
   try{
     const o = {
@@ -950,62 +1062,114 @@ function saveCalcDefaults(){
       stop: els.calcStop?.value || "",
       tp: els.calcTP?.value || "",
       risk: els.calcRisk?.value || "",
+      lev: els.calcLev?.value || "1",
+      feePct: els.calcFeePct?.value || "0.08",
       balance: els.calcBalance?.value || "",
       riskPct: els.calcRiskPct?.value || "",
       usePct: !!els.calcUsePct?.checked,
-      contractSize: els.calcContractSize?.value || "1",
-      lev: els.calcLev?.value || "1",
-      feePct: els.calcFeePct?.value || "0.08"
+      contractSize: els.calcContractSize?.value || "1"
     };
-    localStorage.setItem("pnl_calc_v1", JSON.stringify(o));
+    localStorage.setItem(CALC_LS_KEY, JSON.stringify(o));
   }catch{}
+}
+
+function setKpiText(kpiEl, valueText, subText){
+  if(!kpiEl) return;
+  kpiEl.querySelector(".value").textContent = valueText;
+  if (subText !== undefined) kpiEl.querySelector(".sub").textContent = subText;
+}
+
+function fmtInputNumber(n, decimals=8){
+  if(n === null || n === undefined || !isFinite(n)) return "";
+  const s = Number(n).toFixed(decimals);
+  return s.replace(/\.0+$/,'').replace(/(\.\d*?)0+$/,'$1');
+}
+
+function convertAmountBetweenCurrencies(amount, fromCur, toCur){
+  const r = state.fx.usdToEur;
+  if(!r) return amount;
+  if(fromCur === toCur) return amount;
+  if(fromCur === "USD" && toCur === "EUR") return amount * r;
+  if(fromCur === "EUR" && toCur === "USD") return amount / r;
+  return amount;
+}
+
+// When switching USD/EUR, keep underlying USD value constant by converting the input fields.
+function convertCalculatorInputs(prevCur, nextCur){
+  if(!state.fx.usdToEur) return;
+  const fields = [els.calcEntry, els.calcStop, els.calcTP, els.calcRisk, els.calcBalance];
+  for(const el of fields){
+    if(!el) continue;
+    const v = parseNumber(el.value);
+    if(!v) continue;
+    const converted = convertAmountBetweenCurrencies(v, prevCur, nextCur);
+    const dec = (el === els.calcRisk || el === els.calcBalance) ? 2 : 8;
+    el.value = fmtInputNumber(converted, dec);
+  }
 }
 
 function calcCompute(){
   if(!els.calcEntry) return;
 
+  // risk currency badge follows selected currency in header
+  if (els.calcRiskCur) els.calcRiskCur.textContent = state.currency;
+
   const side = (els.calcSide?.value || "LONG").toUpperCase();
-  const entry = parseNumber(els.calcEntry.value);
-  const stop = parseNumber(els.calcStop.value);
-  const tp = parseNumber(els.calcTP.value);
-  const contractSize = Math.max(0.0000001, parseNumber(els.calcContractSize?.value || 1));
-  const lev = Math.max(1, parseNumber(els.calcLev?.value || 1));
-  const feePct = Math.max(0, parseNumber(els.calcFeePct?.value || 0)) / 100;
 
+  // Calculator inputs follow the selected currency (USD/EUR)
+  const entrySelected = parseNumber(els.calcEntry.value);
+  const stopSelected = parseNumber(els.calcStop.value);
+  const tpSelected = parseNumber(els.calcTP?.value || "");
+
+  let entryUsd = entrySelected;
+  let stopUsd  = stopSelected;
+  let tpUsd    = tpSelected;
+
+  if (state.currency === "EUR" && state.fx.usdToEur) {
+    entryUsd = entrySelected / state.fx.usdToEur;
+    stopUsd  = stopSelected  / state.fx.usdToEur;
+    tpUsd    = tpSelected    / state.fx.usdToEur;
+  }
+  const lev = Math.max(1, parseNumber(els.calcLev?.value || "1") || 1);
+  const feePct = Math.max(0, parseNumber(els.calcFeePct?.value || "0") || 0) / 100;
+  const contractSize = Math.max(0, parseNumber(els.calcContractSize?.value || "1") || 0) || 1;
+
+  // Inputs are in selected currency (header). Convert to USD for sizing.
+  const riskSelected = parseNumber(els.calcRisk?.value || "");
+  const balSelected = parseNumber(els.calcBalance?.value || "");
+  const riskPct = parseNumber(els.calcRiskPct?.value || "");
   const usePct = !!els.calcUsePct?.checked;
-  const balance = parseNumber(els.calcBalance?.value);
-  const riskPct = parseNumber(els.calcRiskPct?.value) / 100;
-  let risk = parseNumber(els.calcRisk.value);
 
-  // If using %: compute risk from balance
-  if(usePct && balance>0 && riskPct>0){
-    risk = balance * riskPct;
-    if(els.calcRisk) els.calcRisk.value = risk.toFixed(4);
-    if(els.calcRiskCur) els.calcRiskCur.textContent = convertedLabel();
+  let riskUsd = riskSelected;
+  let balUsd = balSelected;
+
+  if (state.currency === "EUR" && state.fx.usdToEur) {
+    riskUsd = riskSelected / state.fx.usdToEur;
+    balUsd = balSelected / state.fx.usdToEur;
   }
 
-  // Convert inputs to USD for calculations if currency is EUR
-  const r = state.fx.usdToEur;
-  const toUsd = (v)=> (state.currency==="USD" || !r) ? v : (v / r);
+  if (usePct) {
+    if (!balUsd || !riskPct) {
+      els.calcHint && (els.calcHint.textContent = "Vul balance + risk% in (of zet 'gebruik %' uit).");
+      return;
+    }
+    riskUsd = balUsd * (riskPct / 100);
+  }
 
-  const entryUsd = toUsd(entry);
-  const stopUsd = toUsd(stop);
-  const tpUsd = toUsd(tp);
-  const riskUsd = toUsd(risk);
-
-  if(!entryUsd || !stopUsd || !riskUsd){
-    setKpiText(els.calcKpiQty, "—", "Vul entry/stop/risk");
-    setKpiText(els.calcKpiNotional, "—", "");
-    setKpiText(els.calcKpiMargin, "—", "");
-    setKpiText(els.calcKpiSL, "—", "");
-    setKpiText(els.calcKpiTP, "—", "");
-    els.calcHint.textContent = "Vul minimaal Entry, Stop en Risk (of Risk%).";
+  if (!entryUsd || !stopUsd || !riskUsd) {
+    els.calcHint && (els.calcHint.textContent = "Vul entry, stop en risico in.");
+    setKpiText(els.calcKpiQty, "—", "Aantal contracts/coins");
+    setKpiText(els.calcKpiNotional, "—", "Entry × qty");
+    setKpiText(els.calcKpiMargin, "—", "Notional / leverage");
+    setKpiText(els.calcKpiSL, "—", "Doel ≈ risico");
+    setKpiText(els.calcKpiTP, "—", "RR: —");
+    els.calcKpiTP?.classList.remove("good","bad","warn");
     return;
   }
-  // Per-unit risk
+
   const perUnitRisk = Math.abs(entryUsd - stopUsd);
-  if(perUnitRisk <= 0){
-    els.calcHint.textContent = "Stop mag niet gelijk zijn aan entry.";
+  if (perUnitRisk <= 0) {
+    els.calcHint && (els.calcHint.textContent = "Stop mag niet gelijk zijn aan entry.");
     return;
   }
 
