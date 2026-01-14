@@ -107,6 +107,7 @@
 
 /* --- Interactive chart crosshair + tooltip --- */
 .chartWrap { position: relative; }
+.chartOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: auto; }
 .chartOverlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:auto; }
 .chartTooltip{
   position:absolute; z-index:5; pointer-events:none;
@@ -225,12 +226,16 @@
 <div class="muted small">Op basis van Net PnL per trade/order.</div>
 </div>
 <div class="row" style="gap:8px">
-<button class="pill active" id="btnChartZero" type="button">Nul-lijn</button>
-<button class="pill" id="btnChartArea" type="button">Voorbeeld</button>
+            <button class="pill active" id="btnChartPnl" type="button">PnL chart</button>
+            <button class="pill" id="btnChartTotal" type="button">Total chart</button>
 <span class="badge" id="countBadge">0 trades</span>
 </div>
 </div>
-<div class="chartWrap"><canvas height="320" id="equityCanvas" width="1000"></canvas></div>
+        <div class="chartWrap">
+          <canvas height="320" id="equityCanvas" width="1000"></canvas>
+          <canvas height="320" id="equityOverlay" width="1000" class="chartOverlay"></canvas>
+          <div id="chartTip" class="chartTooltip" style="display:none"></div>
+        </div>
 </div>
 </section>
 <!-- Monthly -->
