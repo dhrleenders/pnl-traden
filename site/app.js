@@ -27,6 +27,11 @@ const state = {
   chartMode: "pnl" // "pnl" or "total"
 };
 
+// ===== Deposits fallback (temporary, safe) =====
+function depositsForCurrentExchange(deposits = []) {
+  return 0;
+}
+
 const els = {
   currency: document.getElementById("currency"),
   exchange: document.getElementById("exchange"),
