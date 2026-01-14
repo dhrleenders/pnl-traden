@@ -1,4 +1,4 @@
-// PnL Traden — local-first PWA (cloud-ready)
+F// PnL Traden — local-first PWA (cloud-ready)
 // - Loads latest synced JSON from /data/pnl.json (Netlify/GitHub)
 // - Stores trades in IndexedDB (Dexie) so phone works offline
 // - Optional CSV imports (BloFin, Kraken trades.csv, Kraken Futures account log CSV)
@@ -854,7 +854,7 @@ async function renderAll(){
   const trades=await getFilteredTrades();
   const k=aggregateKPIs(trades);
 // Manual base (stortingen - opnames) per exchange filter
-const deposits = loadDeposits();
+const deposits = [];
 const depositBaseUsd = depositsForCurrentExchange(deposits); // number or null
 const baseUsd = (typeof depositBaseUsd === "number" && isFinite(depositBaseUsd)) ? depositBaseUsd : 0;
 
