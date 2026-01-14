@@ -24,7 +24,7 @@ const state = {
   marketType: "ALL",
   range: "1w",
   search: "",
-  chartMode: "zero" // "zero" or "area"
+  chartMode: "pnl" // "pnl" or "total"
 };
 
 const els = {
@@ -50,6 +50,7 @@ const els = {
     import: document.getElementById("view-import")
   },
 
+  kpiTotal: document.getElementById("kpiTotal"),
   kpiNet: document.getElementById("kpiNet"),
   kpiFees: document.getElementById("kpiFees"),
   kpiWinrate: document.getElementById("kpiWinrate"),
@@ -333,7 +334,8 @@ function normalizeKrakenFuturesAccountLog(objs){
     const feesTotal=(type==="funding rate change")?0:((feeUsd||0)+(liquidationFeeUsd||0));
     const netUsd=pnlUsd-feesTotal+fundingUsd;
     const tradeKey=uid?`KRAKENF_LOG|${uid}`:`KRAKENF_LOG|${datetimeIso}|${typeRaw}|${symbol}|${pnlUsd}|${feesTotal}|${fundingUsd}`;
-    out.push({ datetime:datetimeIso, exchange:"KRAKEN", symbol, marketType:"FUTURES", side:typeRaw.toUpperCase(), qty:0, price:parseNumber(o["trade price"]||o["trade_price"]||0), realizedPnlUsd:pnlUsd, feesUsd:feesTotal, fundingUsd, netPnlUsd:netUsd, notes:safeText(o["position uid"]||"")||safeText(typeRaw), tradeKey });
+    const balanceUsd = parseNumber(o["new balance"] || o["new_balance"]);
+    out.push({ datetime:datetimeIso, exchange:"KRAKEN", symbol, marketType:"FUTURES", side:typeRaw.toUpperCase(), qty:0, price:parseNumber(o["trade price"]||o["trade_price"]||0), realizedPnlUsd:pnlUsd, feesUsd:feesTotal, fundingUsd, netPnlUsd:netUsd, balanceUsd, notes:safeText(o["position uid"]||"")||safeText(typeRaw), tradeKey });
   }
   return out.filter(x=>x.datetime);
 }
@@ -353,6 +355,23 @@ function normalizeApiRows(data){
       feesUsd: Number(r.feesUsd || 0),
       fundingUsd: Number(r.fundingUsd || 0),
       netPnlUsd: Number(r.netPnlUsd ?? (Number(r.realizedPnlUsd||0) - Number(r.feesUsd||0) + Number(r.fundingUsd||0))),
+      // Some sources provide equity/balance under different header names.
+      // We try a few common variants so the Total Value bar & Total chart can work.
+      balanceUsd: (() => {
+        const candidates = [
+          r.balanceUsd,
+          r.newBalanceUsd,
+          r.newBalance,
+          r.new_balance,
+          r.balance,
+          // Kraken CSV header can literally be "new balance"
+          r["new balance"],
+          r["new_balance"],
+          r["newBalance"],
+        ];
+        const v = candidates.find(x => x !== undefined && x !== null && x !== "");
+        return (v !== undefined) ? Number(v) : undefined;
+      })(),
       notes: safeText(r.notes || ""),
       tradeKey: safeText(r.tradeKey || "")
         }));
@@ -466,7 +485,25 @@ function aggregateKPIs(trades){
 }
 function buildEquitySeries(tradesAsc){
   let cum=0; const pts=[];
-  for(const t of tradesAsc){ cum += (t.netPnlUsd||0); pts.push({x:t.datetime,y:cum}); }
+  for(const t of tradesAsc){
+    cum += (t.netPnlUsd||0);
+    pts.push({ x: t.ts, y: cum });
+  }
+  return pts;
+}
+
+// Build "total value" series from per-row balances (if present).
+// Falls back to equity series if we don't have enough balance points.
+function buildTotalSeries(tradesAsc){
+  const pts = [];
+  for (const t of tradesAsc){
+    // accept a few possible field names
+    const b = num(t.balanceUsd ?? t.newBalanceUsd ?? t.balance ?? t.newBalance);
+    if (!isFinite(b) || b === 0) continue;
+    pts.push({ x: t.ts, y: b });
+  }
+  // need at least 2 points to draw something meaningful
+  if (pts.length < 2) return null;
   return pts;
 }
 function monthlyBuckets(trades, nowRef){
@@ -559,7 +596,7 @@ function drawLineChart(canvas, points, { yLabel = "" } = {}) {
   ctx.lineTo(w - pad * 0.2, yZero);
   ctx.stroke();
 
-  const fillArea = (state.chartMode === "area");
+  const fillArea = (state.chartMode === "pnl");
   const green = "rgba(34,197,94,0.95)";
   const red = "rgba(239,68,68,0.95)";
 
@@ -570,7 +607,7 @@ function drawLineChart(canvas, points, { yLabel = "" } = {}) {
     const y2p = Y(pB.y);
 
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 4;
     ctx.beginPath();
     ctx.moveTo(x1, y1p);
     ctx.lineTo(x2, y2p);
@@ -844,17 +881,43 @@ async function renderAll(){
   const netC=convertUsdToSelected(k.net);
   const feeC=convertUsdToSelected(k.fees);
 
+  // Total value (sum of last known balances per exchange, if present)
+  if (els.kpiTotal) {
+    const latestBalanceUsd = (exch) => {
+      for (let i = trades.length - 1; i >= 0; i--) {
+        const t = trades[i];
+        if (exch !== "ALL" && (t.exchange || "") !== exch) continue;
+        if (t.balanceUsd !== undefined && t.balanceUsd !== null && !Number.isNaN(Number(t.balanceUsd))) {
+          return Number(t.balanceUsd);
+        }
+      }
+      return null;
+    };
+    const bKraken = latestBalanceUsd("KRAKEN");
+    const bBlofin = latestBalanceUsd("BLOFIN");
+    const parts = [];
+    let sumUsd = 0;
+    if (bKraken !== null) { sumUsd += bKraken; parts.push(`Kraken: ${formatMoney(convertUsdToSelected(bKraken), convertedLabel())}`); }
+    if (bBlofin !== null) { sumUsd += bBlofin; parts.push(`Blofin: ${formatMoney(convertUsdToSelected(bBlofin), convertedLabel())}`); }
+    if (parts.length) {
+      setKpi(els.kpiTotal, formatMoney(convertUsdToSelected(sumUsd), convertedLabel()), null, parts.join(" • "));
+    } else {
+      setKpi(els.kpiTotal, "—", null, "Geen balance-veld gevonden (alleen PnL beschikbaar).");
+    }
+  }
+
   if (els.kpiNet) setKpi(els.kpiNet, formatMoney(netC, convertedLabel()), netC>=0 ? "good":"bad");
   if (els.kpiFees) setKpi(els.kpiFees, formatMoney(feeC, convertedLabel()));
   if (els.kpiWinrate) setKpi(els.kpiWinrate, formatPct(k.winrate), null, `${k.wins} / ${k.count}`);
 
-  els.countBadge.textContent = `${k.count} trades`;
-  els.tradeCount.textContent = `${k.count} trades`;
+  if (els.countBadge) els.countBadge.textContent = `${k.count} trades`;
+  if (els.tradeCount) els.tradeCount.textContent = `${k.count} trades`;
   // Equity
-  const tradesAsc=[...trades].sort((a,b)=>(a.datetime>b.datetime?1:-1));
-  const ptsUsd=buildEquitySeries(tradesAsc);
+  const tradesAsc=[...trades].sort((a,b)=>(a.ts||0)-(b.ts||0));
+  const ptsUsd = (state.chartMode === "total") ? buildTotalSeries(tradesAsc) : buildEquitySeries(tradesAsc);
   const pts=ptsUsd.map(p=>({x:p.x,y:convertUsdToSelected(p.y)}));
-  drawLineChart(els.equityCanvas, pts, { yLabel:`Cumulatief (${convertedLabel()})` });
+  const yLabel = (state.chartMode === "total") ? `Totale waarde (${convertedLabel()})` : `Cumulatief (${convertedLabel()})`;
+  drawLineChart(els.equityCanvas, pts, { yLabel });
 
   // Monthly (view removed; keep as optional so older code doesn't crash)
   if (els.monthlyCanvas && els.monthlyHint) {
@@ -1191,17 +1254,17 @@ els.marketType.addEventListener("change", async()=>{ state.marketType=els.market
 els.range.addEventListener("change", async()=>{ state.range=els.range.value; await renderAll(); });
 els.search.addEventListener("input", async()=>{ state.search=els.search.value; await renderAll(); });
 
-// Chart toggle buttons
-const btnChartZero = document.getElementById("btnChartZero");
-const btnChartArea = document.getElementById("btnChartArea");
+// Chart toggle buttons (Dashboard)
+const btnChartPnl = document.getElementById("btnChartPnl");
+const btnChartTotal = document.getElementById("btnChartTotal");
 function setChartMode(mode){
   state.chartMode = mode;
-  btnChartZero?.classList.toggle("active", mode==="zero");
-  btnChartArea?.classList.toggle("active", mode==="area");
+  btnChartPnl?.classList.toggle("active", mode==="pnl");
+  btnChartTotal?.classList.toggle("active", mode==="total");
   renderAll();
 }
-btnChartZero?.addEventListener("click", ()=>setChartMode("zero"));
-btnChartArea?.addEventListener("click", ()=>setChartMode("area"));
+btnChartPnl?.addEventListener("click", ()=>setChartMode("pnl"));
+btnChartTotal?.addEventListener("click", ()=>setChartMode("total"));
 
 
 els.importBtn.addEventListener("click", async()=>{
