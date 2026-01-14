@@ -124,6 +124,41 @@
 .chartTooltip .pct.pos{ color: var(--green); }
 .chartTooltip .pct.neg{ color: var(--red); }
 
+/* Calendar */
+.calWrap{display:grid;grid-template-columns:1fr 240px;gap:16px;margin-top:12px;align-items:start;}
+@media (max-width: 900px){.calWrap{grid-template-columns:1fr;}}
+.calHead{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin:10px 0 8px;}
+.calHead .d{font-size:12px;opacity:0.7;text-align:center;}
+.calGrid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;}
+.calDay{border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:10px 10px 8px;min-height:60px;background:rgba(255,255,255,0.03);}
+.calDay .n{font-weight:700;font-size:14px;}
+.calDay .v{margin-top:6px;font-weight:700;font-size:13px;}
+.calDay.pos{background:rgba(0,255,160,0.14);border-color:rgba(0,255,160,0.25);}
+.calDay.neg{background:rgba(255,80,120,0.14);border-color:rgba(255,80,120,0.25);}
+.calDay.zero{background:rgba(255,255,255,0.02);}
+.calDay.empty{background:transparent;border-color:transparent;}
+.calSummary{padding:12px;border:1px solid rgba(255,255,255,0.08);border-radius:16px;background:rgba(255,255,255,0.03);}
+.calSummary .row{justify-content:space-between;margin:10px 0;}
+.calSummary .label{opacity:0.75;font-size:12px;}
+.calSummary .value{font-weight:800;}
+/* Calendar */
+.calWrap{display:grid;grid-template-columns:1fr 240px;gap:16px;margin-top:12px;align-items:start;}
+@media (max-width: 900px){.calWrap{grid-template-columns:1fr;}}
+.calHead{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin:10px 0 8px;}
+.calHead .d{font-size:12px;opacity:0.7;text-align:center;}
+.calGrid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;}
+.calDay{border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:10px 10px 8px;min-height:60px;background:rgba(255,255,255,0.03);}
+.calDay .n{font-weight:700;font-size:14px;}
+.calDay .v{margin-top:6px;font-weight:700;font-size:13px;}
+.calDay.pos{background:rgba(0,255,160,0.14);border-color:rgba(0,255,160,0.25);}
+.calDay.neg{background:rgba(255,80,120,0.14);border-color:rgba(255,80,120,0.25);}
+.calDay.zero{background:rgba(255,255,255,0.02);}
+.calDay.empty{background:transparent;border-color:transparent;}
+.calSummary{padding:12px;border:1px solid rgba(255,255,255,0.08);border-radius:16px;background:rgba(255,255,255,0.03);}
+.calSummary .row{justify-content:space-between;margin:10px 0;}
+.calSummary .label{opacity:0.75;font-size:12px;}
+.calSummary .value{font-weight:800;}
+
 </style>
 </head>
 <body>
@@ -258,8 +293,38 @@
 </div>
 <div class="card two">
 <div style="font-weight:700;margin-bottom:6px">Daily Net PnL</div>
-<canvas height="280" id="analyseDailyCanvas" width="1000"></canvas>
+<canvas height="280" id="analyseDailyCanvas" width="1000"></canvas></div>
+
+<div class="card two" id="calCard">
+  <div class="row" style="justify-content:space-between;align-items:center">
+    <div>
+      <div style="font-weight:700">Kalender (Daily PnL)</div>
+      <div class="muted small">Per dag op basis van Net PnL. Kleuren: groen=winst, rood=verlies.</div>
+    </div>
+    <div class="row" style="gap:10px;align-items:center">
+      <select id="calMonth" class="in" style="max-width:140px"></select>
+    </div>
+  </div>
+
+  <div class="calWrap">
+    <div>
+      <div class="calHead">
+        <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
+      </div>
+      <div id="calGrid" class="calGrid"></div>
+    </div>
+
+    <div class="calSummary">
+      <div class="kpi mini"><div class="label">Total PnL</div><div class="value" id="calTotalPnl">—</div></div>
+      <div class="kpi mini"><div class="label">Total PnL%</div><div class="value" id="calTotalPct">—</div></div>
+      <div class="kpi mini"><div class="label">Winning days</div><div class="value" id="calWinDays">—</div></div>
+      <div class="kpi mini"><div class="label">Losing days</div><div class="value" id="calLoseDays">—</div></div>
+      <div class="kpi mini"><div class="label">Break-even</div><div class="value" id="calBeDays">—</div></div>
+      <div class="hint" style="margin-top:8px">Pnl% = Total PnL / (stortingen - opnames) op basis van je Import inputs.</div>
+    </div>
+  </div>
 </div>
+
 <div class="card">
 <div class="row" style="justify-content:space-between">
 <div class="muted small">Winrate</div>
