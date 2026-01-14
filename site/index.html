@@ -214,14 +214,6 @@
     <!-- Dashboard -->
     <section id="view-dash" class="grid">
       <div class="card">
-        <div class="kpi" id="kpiTotal">
-          <div class="label">Totale waarde (Kraken + Blofin)</div>
-          <div class="value">—</div>
-          <div class="sub muted">Laatste bekende account-balance uit je account-log (als aanwezig).</div>
-        </div>
-      </div>
-
-      <div class="card">
         <div class="kpi" id="kpiNet">
           <div class="label">Net PnL</div>
           <div class="value">—</div>
@@ -236,8 +228,9 @@
             <div class="muted small">Op basis van Net PnL per trade/order.</div>
           </div>
           <div class="row" style="gap:8px">
-            <button class="pill active" id="btnChartPnl" type="button">PnL chart</button>
-            <button class="pill" id="btnChartTotal" type="button">Total chart</button>
+            <button class="pill active" id="btnChartZero" type="button">Nul-lijn</button>
+            <button class="pill" id="btnChartArea" type="button">Voorbeeld</button>
+            <span class="badge" id="countBadge">0 trades</span>
           </div>
         </div>
         <div class="chartWrap"><canvas id="equityCanvas" width="1000" height="320"></canvas></div>
