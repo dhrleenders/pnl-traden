@@ -1,12 +1,13 @@
-<!doctype html>
+<!DOCTYPE html>
+
 <html lang="nl">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>PnL Traden</title>
-  <link rel="manifest" href="manifest.json">
-  <meta name="theme-color" content="#111827">
-  <style>
+<meta charset="utf-8"/>
+<meta content="width=device-width,initial-scale=1" name="viewport"/>
+<title>PnL Traden</title>
+<link href="manifest.json" rel="manifest"/>
+<meta content="#111827" name="theme-color"/>
+<style>
     :root{--bg:#0b1220;--card:#0f1a2e;--muted:#9aa4b2;--text:#e5e7eb;--accent:#22c55e;--danger:#ef4444;--border:#1f2a44}
     *{box-sizing:border-box}
     body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:linear-gradient(180deg,#070b14, var(--bg));color:var(--text)}
@@ -125,355 +126,322 @@
 </style>
 </head>
 <body>
-  <header>
-    <div class="wrap">
-      <div class="row" style="justify-content:space-between">
-        <div class="row">
-          <h1>PnL Traden</h1>
-          <span class="badge" id="dbBadge">Lokaal</span>
-          <span class="badge" id="fxBadge">FX: …</span>
-          <button class="ghost" id="collapseBtn" title="Klap menu in/uit" aria-label="Klap menu in/uit">▾</button>
-        </div>
-        <div class="row">
-          <div class="pill">
-            <span class="muted small">Valuta</span>
-            <select id="currency">
-              <option value="USD">USD</option>
-              <option value="EUR">EUR</option>
-            </select>
-          </div>
-          <button class="ghost" id="exportBtn">Export CSV</button>
-          <button class="ghost" id="resetBtn">Reset data</button>
-        </div>
-      </div>
-      <div id="collapsibleHeader">
-      <div class="tabs" id="tabs">
-        <div class="tab active" data-tab="dash">Dashboard</div>
-        <div class="tab" data-tab="analyse">Analyse</div>
-        <div class="tab" data-tab="trades">Trades</div>
-        <div class="tab" data-tab="calc">Calculator</div>
-        <div class="tab" data-tab="import">Import</div>
-      </div>
-
-      <div class="ex-sticky-wrap">
-        <div class="ex-pill-group" id="exPills">
-          <button class="ex-pill active" data-ex="ALL" type="button">Alles</button>
-          <button class="ex-pill" data-ex="KRAKEN" type="button">Kraken</button>
-          <button class="ex-pill" data-ex="BLOFIN" type="button">Blofin</button>
-        </div>
-      </div>
-      </div>
-    </div>
-  </header>
-
-  <main class="wrap">
-    <!-- Filters -->
-    <div class="card">
-      <div class="row" style="justify-content:space-between">
-        <div class="row">
-          <div class="pill">
-            <span class="muted small">Exchange</span>
-            <select id="exchange">
-              <option value="ALL">Alles</option>
-              <option value="KRAKEN">Kraken</option>
-              <option value="BLOFIN">BloFin</option>
-            </select>
-          </div>
-          <div class="pill">
-            <span class="muted small">Type</span>
-            <select id="marketType">
-              <option value="ALL">Alles</option>
-              <option value="FUTURES">Futures</option>
-              <option value="SPOT">Spot</option>
-            </select>
-          </div>
-          <div class="pill">
-            <span class="muted small">Periode</span>
-            <select id="range">
-              <option value="24h">24 uur</option>
-              <option value="1w" selected>1 week</option>
-              <option value="2w">2 weken</option>
-              <option value="1m">1 maand</option>
-              <option value="3m">Kwartaal</option>
-              <option value="6m">Half jaar</option>
-              <option value="1y">1 jaar</option>
-              <option value="12m">Laatste 12 maanden</option>
-              <option value="all">Totaal</option>
-            </select>
-          </div>
-        </div>
-        <div class="row">
-          <span class="muted small" id="summaryLine">—</span>
-        </div>
-      </div>
-      <div class="hint">
+<header>
+<div class="wrap">
+<div class="row" style="justify-content:space-between">
+<div class="row">
+<h1>PnL Traden</h1>
+<span class="badge" id="dbBadge">Lokaal</span>
+<span class="badge" id="fxBadge">FX: …</span>
+<button aria-label="Klap menu in/uit" class="ghost" id="collapseBtn" title="Klap menu in/uit">▾</button>
+</div>
+<div class="row">
+<div class="pill">
+<span class="muted small">Valuta</span>
+<select id="currency">
+<option value="USD">USD</option>
+<option value="EUR">EUR</option>
+</select>
+</div>
+<button class="ghost" id="exportBtn">Export CSV</button>
+<button class="ghost" id="resetBtn">Reset data</button>
+</div>
+</div>
+<div id="collapsibleHeader">
+<div class="tabs" id="tabs">
+<div class="tab active" data-tab="dash">Dashboard</div>
+<div class="tab" data-tab="analyse">Analyse</div>
+<div class="tab" data-tab="trades">Trades</div>
+<div class="tab" data-tab="calc">Calculator</div>
+<div class="tab" data-tab="import">Import</div>
+</div>
+<div class="ex-sticky-wrap">
+<div class="ex-pill-group" id="exPills">
+<button class="ex-pill active" data-ex="ALL" type="button">Alles</button>
+<button class="ex-pill" data-ex="KRAKEN" type="button">Kraken</button>
+<button class="ex-pill" data-ex="BLOFIN" type="button">Blofin</button>
+</div>
+</div>
+</div>
+</div>
+</header>
+<main class="wrap">
+<!-- Filters -->
+<div class="card">
+<div class="row" style="justify-content:space-between">
+<div class="row">
+<div class="pill">
+<span class="muted small">Exchange</span>
+<select id="exchange">
+<option value="ALL">Alles</option>
+<option value="KRAKEN">Kraken</option>
+<option value="BLOFIN">BloFin</option>
+</select>
+</div>
+<div class="pill">
+<span class="muted small">Type</span>
+<select id="marketType">
+<option value="ALL">Alles</option>
+<option value="FUTURES">Futures</option>
+<option value="SPOT">Spot</option>
+</select>
+</div>
+<div class="pill">
+<span class="muted small">Periode</span>
+<select id="range">
+<option value="24h">24 uur</option>
+<option selected="" value="1w">1 week</option>
+<option value="2w">2 weken</option>
+<option value="1m">1 maand</option>
+<option value="3m">Kwartaal</option>
+<option value="6m">Half jaar</option>
+<option value="1y">1 jaar</option>
+<option value="12m">Laatste 12 maanden</option>
+<option value="all">Totaal</option>
+</select>
+</div>
+</div>
+<div class="row">
+<span class="muted small" id="summaryLine">—</span>
+</div>
+</div>
+<div class="hint">
         Valuta = live EUR/USD (ECB-achtige feed via exchangerate.host). Data staat lokaal op je telefoon (IndexedDB).
       </div>
-    </div>
-
-    <!-- Dashboard -->
-    <section id="view-dash" class="grid">
-      <div class="card">
-        <div class="kpi" id="kpiNet">
-          <div class="label">Net PnL</div>
-          <div class="value">—</div>
-          <div class="sub">PnL - fees + funding</div>
-        </div>
-      </div>
-
-      <div class="card two">
-        <div class="flex-between">
-          <div>
-            <div style="font-weight:700">Cumulatieve PnL</div>
-            <div class="muted small">Op basis van Net PnL per trade/order.</div>
-          </div>
-          <div class="row" style="gap:8px">
-            <button class="pill active" id="btnChartZero" type="button">Nul-lijn</button>
-            <button class="pill" id="btnChartArea" type="button">Voorbeeld</button>
-            <span class="badge" id="countBadge">0 trades</span>
-          </div>
-        </div>
-        <div class="chartWrap"><canvas id="equityCanvas" width="1000" height="320"></canvas></div>
-      </div>
-    </section>
-
-    <!-- Monthly -->
-    
-    <section id="view-analyse" class="grid" style="display:none">
-      <div class="card">
-        <div class="row" style="justify-content:space-between;align-items:flex-end">
-          <div>
-            <div style="font-weight:800;font-size:16px">Analyse</div>
-            <div class="muted small">KPI’s op basis van je gefilterde dataset (Alles/Kraken/Blofin + MarketType).</div>
-          </div>
-          <div class="badge" id="analyseRangeBadge">—</div>
-        </div>
-      </div>
-
-      <div class="card third"><div class="kpi" id="kpiToday"><div class="label">Today</div><div class="value">—</div><div class="sub">Net PnL</div></div></div>
-      <div class="card third"><div class="kpi" id="kpi7d"><div class="label">7 dagen</div><div class="value">—</div><div class="sub">Net PnL</div></div></div>
-      <div class="card third"><div class="kpi" id="kpi30d"><div class="label">30 dagen</div><div class="value">—</div><div class="sub">Net PnL</div></div></div>
-
-      <div class="card two">
-        <div style="font-weight:700;margin-bottom:6px">Cumulatief (Analyse)</div>
-        <canvas id="analyseEquityCanvas" width="1000" height="300"></canvas>
-      </div>
-
-      <div class="card two">
-        <div style="font-weight:700;margin-bottom:6px">Daily Net PnL</div>
-        <canvas id="analyseDailyCanvas" width="1000" height="280"></canvas>
-      </div>
-
-      <div class="card">
-        <div class="row" style="justify-content:space-between">
-          <div class="muted small">Winrate</div>
-          <div class="mono" id="analyseWinrate">—</div>
-        </div>
-        <div class="row" style="justify-content:space-between">
-          <div class="muted small">Trades</div>
-          <div class="mono" id="analyseTrades">—</div>
-        </div>
-        <div class="row" style="justify-content:space-between">
-          <div class="muted small">Gem. trade</div>
-          <div class="mono" id="analyseAvg">—</div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Trades -->
-    <section id="view-trades" class="grid" style="display:none">
-      <div class="card">
-        <div class="row" style="justify-content:space-between">
-          <div class="row">
-            <input id="search" placeholder="Zoek: symbool, id, notes…" style="min-width:240px">
-          </div>
-          <div class="row">
-            <span class="muted small" id="tradeCount">—</span>
-          </div>
-        </div>
-        <div style="overflow:auto;margin-top:10px">
-          <table>
-            <thead>
-              <tr>
-                <th>Datum</th>
-                <th>Exchange</th>
-                <th>Symbool</th>
-                <th>Type</th>
-                <th>Side</th>
-                <th class="right">Qty</th>
-                <th class="right">Price</th>
-                <th class="right">Fees</th>
-                <th class="right">PnL</th>
-                <th class="right">Net</th>
-                <th>ID/Notes</th>
-              </tr>
-            </thead>
-            <tbody id="tradeRows"></tbody>
-          </table>
-        </div>
-        <div class="hint">Tip: BloFin order history bevat PNL en Fee per order. Kraken trades.csv in dit project was leeg; zodra je een echte export importeert, komt het hier ook binnen.</div>
-    </section>
-
-    
-    <!-- Calculator -->
-    <section id="view-calc" class="grid" style="display:none">
-        <div class="card half">
-          <div class="card-h">
-            <div>
-              <div class="title">Positie calculator</div>
-              <div class="hint">Bereken size op basis van risico (stop-loss). Werkt voor long & short.</div>
-            </div>
-          </div>
-
-          <div class="form">
-            <div class="row">
-              <label class="lbl">Richting</label>
-              <select id="calcSide" class="in">
-                <option value="LONG" selected>Long</option>
-                <option value="SHORT">Short</option>
-              </select>
-            </div>
-
-            <div class="row">
-              <label class="lbl">Entry prijs</label>
-              <input id="calcEntry" class="in mono" inputmode="decimal" placeholder="bijv. 42000" />
-            </div>
-
-            <div class="row">
-              <label class="lbl">Stop prijs</label>
-              <input id="calcStop" class="in mono" inputmode="decimal" placeholder="bijv. 41500" />
-            </div>
-
-            <div class="row">
-              <label class="lbl">Take-profit (optioneel)</label>
-              <input id="calcTP" class="in mono" inputmode="decimal" placeholder="bijv. 43500" />
-            </div>
-
-            <div class="row">
-              <label class="lbl">Balance</label>
-              <input id="calcBalance" class="in mono" inputmode="decimal" placeholder="bijv. 5000" />
-            </div>
-
-            <div class="row">
-              <label class="lbl">Risk % van balance</label>
-              <div style="display:flex;gap:8px;align-items:center;flex:1">
-                <input id="calcRiskPct" class="in mono" inputmode="decimal" placeholder="bijv. 1" style="flex:1" />
-                <span class="badge">%</span>
-                <label class="badge" style="display:flex;gap:6px;align-items:center">
-                  <input id="calcUsePct" type="checkbox" style="accent-color:#22c55e" />
+</div>
+<!-- Dashboard -->
+<section class="grid" id="view-dash">
+<div class="card"><div class="kpi" id="kpiTotal"><div class="label">Totale waarde</div><div class="value">—</div><div class="sub">(Stortingen - opnames) + Net PnL</div></div></div><div class="card">
+<div class="kpi" id="kpiNet">
+<div class="label">Net PnL</div>
+<div class="value">—</div>
+<div class="sub">PnL - fees + funding</div>
+</div>
+</div>
+<div class="card two">
+<div class="flex-between">
+<div>
+<div style="font-weight:700">Cumulatieve PnL</div>
+<div class="muted small">Op basis van Net PnL per trade/order.</div>
+</div>
+<div class="row" style="gap:8px">
+<button class="pill active" id="btnChartZero" type="button">Nul-lijn</button>
+<button class="pill" id="btnChartArea" type="button">Voorbeeld</button>
+<span class="badge" id="countBadge">0 trades</span>
+</div>
+</div>
+<div class="chartWrap"><canvas height="320" id="equityCanvas" width="1000"></canvas></div>
+</div>
+</section>
+<!-- Monthly -->
+<section class="grid" id="view-analyse" style="display:none">
+<div class="card">
+<div class="row" style="justify-content:space-between;align-items:flex-end">
+<div>
+<div style="font-weight:800;font-size:16px">Analyse</div>
+<div class="muted small">KPI’s op basis van je gefilterde dataset (Alles/Kraken/Blofin + MarketType).</div>
+</div>
+<div class="badge" id="analyseRangeBadge">—</div>
+</div>
+</div>
+<div class="card third"><div class="kpi" id="kpiToday"><div class="label">Today</div><div class="value">—</div><div class="sub">Net PnL</div></div></div>
+<div class="card third"><div class="kpi" id="kpi7d"><div class="label">7 dagen</div><div class="value">—</div><div class="sub">Net PnL</div></div></div>
+<div class="card third"><div class="kpi" id="kpi30d"><div class="label">30 dagen</div><div class="value">—</div><div class="sub">Net PnL</div></div></div>
+<div class="card two">
+<div style="font-weight:700;margin-bottom:6px">Cumulatief (Analyse)</div>
+<canvas height="300" id="analyseEquityCanvas" width="1000"></canvas>
+</div>
+<div class="card two">
+<div style="font-weight:700;margin-bottom:6px">Daily Net PnL</div>
+<canvas height="280" id="analyseDailyCanvas" width="1000"></canvas>
+</div>
+<div class="card">
+<div class="row" style="justify-content:space-between">
+<div class="muted small">Winrate</div>
+<div class="mono" id="analyseWinrate">—</div>
+</div>
+<div class="row" style="justify-content:space-between">
+<div class="muted small">Trades</div>
+<div class="mono" id="analyseTrades">—</div>
+</div>
+<div class="row" style="justify-content:space-between">
+<div class="muted small">Gem. trade</div>
+<div class="mono" id="analyseAvg">—</div>
+</div>
+</div>
+</section>
+<!-- Trades -->
+<section class="grid" id="view-trades" style="display:none">
+<div class="card">
+<div class="row" style="justify-content:space-between">
+<div class="row">
+<input id="search" placeholder="Zoek: symbool, id, notes…" style="min-width:240px"/>
+</div>
+<div class="row">
+<span class="muted small" id="tradeCount">—</span>
+</div>
+</div>
+<div style="overflow:auto;margin-top:10px">
+<table>
+<thead>
+<tr>
+<th>Datum</th>
+<th>Exchange</th>
+<th>Symbool</th>
+<th>Type</th>
+<th>Side</th>
+<th class="right">Qty</th>
+<th class="right">Price</th>
+<th class="right">Fees</th>
+<th class="right">PnL</th>
+<th class="right">Net</th>
+<th>ID/Notes</th>
+</tr>
+</thead>
+<tbody id="tradeRows"></tbody>
+</table>
+</div>
+<div class="hint">Tip: BloFin order history bevat PNL en Fee per order. Kraken trades.csv in dit project was leeg; zodra je een echte export importeert, komt het hier ook binnen.</div>
+</div></section>
+<!-- Calculator -->
+<section class="grid" id="view-calc" style="display:none">
+<div class="card half">
+<div class="card-h">
+<div>
+<div class="title">Positie calculator</div>
+<div class="hint">Bereken size op basis van risico (stop-loss). Werkt voor long &amp; short.</div>
+</div>
+</div>
+<div class="form">
+<div class="row">
+<label class="lbl">Richting</label>
+<select class="in" id="calcSide">
+<option selected="" value="LONG">Long</option>
+<option value="SHORT">Short</option>
+</select>
+</div>
+<div class="row">
+<label class="lbl">Entry prijs</label>
+<input class="in mono" id="calcEntry" inputmode="decimal" placeholder="bijv. 42000">
+</input></div>
+<div class="row">
+<label class="lbl">Stop prijs</label>
+<input class="in mono" id="calcStop" inputmode="decimal" placeholder="bijv. 41500"/>
+</div>
+<div class="row">
+<label class="lbl">Take-profit (optioneel)</label>
+<input class="in mono" id="calcTP" inputmode="decimal" placeholder="bijv. 43500"/>
+</div>
+<div class="row">
+<label class="lbl">Balance</label>
+<input class="in mono" id="calcBalance" inputmode="decimal" placeholder="bijv. 5000"/>
+</div>
+<div class="row">
+<label class="lbl">Risk % van balance</label>
+<div style="display:flex;gap:8px;align-items:center;flex:1">
+<input class="in mono" id="calcRiskPct" inputmode="decimal" placeholder="bijv. 1" style="flex:1"/>
+<span class="badge">%</span>
+<label class="badge" style="display:flex;gap:6px;align-items:center">
+<input id="calcUsePct" style="accent-color:#22c55e" type="checkbox"/>
                   gebruik %
                 </label>
-              </div>
-            </div>
-
-            <div class="row">
-              <label class="lbl">Risico per trade</label>
-              <div style="display:flex;gap:8px;align-items:center;flex:1">
-                <input id="calcRisk" class="in mono" inputmode="decimal" placeholder="bijv. 50" style="flex:1" />
-                <span class="badge" id="calcRiskCur">USD</span>
-              </div>
-            </div>
-
-            <div class="row">
-              <label class="lbl">Contract size</label>
-              <input id="calcContractSize" class="in mono" inputmode="decimal" value="1" />
-            </div>
-
-            <div class="row">
-              <label class="lbl">Leverage</label>
-              <input id="calcLev" class="in mono" inputmode="decimal" value="1" />
-            </div>
-
-            <div class="row">
-              <label class="lbl">Fee % (totaal)</label>
-              <input id="calcFeePct" class="in mono" inputmode="decimal" value="0.08" />
-            </div>
-
-            <div class="row" style="gap:10px;flex-wrap:wrap">
-              <button class="btn" id="calcResetBtn" type="button">Reset</button>
-              <span class="hint" id="calcHint">Vul entry/stop + risico in.</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-h">
-            <div>
-              <div class="title">Resultaat</div>
-              <div class="hint">Notional in USD (en omgerekend naar gekozen valuta in de header).</div>
-            </div>
-          </div>
-
-          <div class="kpis">
-            <div class="kpi" id="calcKpiQty">
-              <div class="label">Positie size (qty)</div>
-              <div class="value">—</div>
-              <div class="sub">Aantal contracts/coins</div>
-            </div>
-
-            <div class="kpi" id="calcKpiNotional">
-              <div class="label">Notional</div>
-              <div class="value">—</div>
-              <div class="sub">Entry × qty</div>
-            </div>
-
-            <div class="kpi" id="calcKpiMargin">
-              <div class="label">Benodigde margin</div>
-              <div class="value">—</div>
-              <div class="sub">Notional / leverage</div>
-            </div>
-
-            <div class="kpi" id="calcKpiSL">
-              <div class="label">Verlies op stop (incl. fees)</div>
-              <div class="value">—</div>
-              <div class="sub">Doel ≈ risico</div>
-            </div>
-
-            <div class="kpi" id="calcKpiTP">
-              <div class="label">Winst op TP (incl. fees)</div>
-              <div class="value">—</div>
-              <div class="sub">RR: —</div>
-            </div>
-          </div>
-        </div>
-    </section>
-
+</div>
+</div>
+<div class="row">
+<label class="lbl">Risico per trade</label>
+<div style="display:flex;gap:8px;align-items:center;flex:1">
+<input class="in mono" id="calcRisk" inputmode="decimal" placeholder="bijv. 50" style="flex:1"/>
+<span class="badge" id="calcRiskCur">USD</span>
+</div>
+</div>
+<div class="row">
+<label class="lbl">Contract size</label>
+<input class="in mono" id="calcContractSize" inputmode="decimal" value="1"/>
+</div>
+<div class="row">
+<label class="lbl">Leverage</label>
+<input class="in mono" id="calcLev" inputmode="decimal" value="1"/>
+</div>
+<div class="row">
+<label class="lbl">Fee % (totaal)</label>
+<input class="in mono" id="calcFeePct" inputmode="decimal" value="0.08"/>
+</div>
+<div class="row" style="gap:10px;flex-wrap:wrap">
+<button class="btn" id="calcResetBtn" type="button">Reset</button>
+<span class="hint" id="calcHint">Vul entry/stop + risico in.</span>
+</div>
+</div>
+</div>
+<div class="card">
+<div class="card-h">
+<div>
+<div class="title">Resultaat</div>
+<div class="hint">Notional in USD (en omgerekend naar gekozen valuta in de header).</div>
+</div>
+</div>
+<div class="kpis">
+<div class="kpi" id="calcKpiQty">
+<div class="label">Positie size (qty)</div>
+<div class="value">—</div>
+<div class="sub">Aantal contracts/coins</div>
+</div>
+<div class="kpi" id="calcKpiNotional">
+<div class="label">Notional</div>
+<div class="value">—</div>
+<div class="sub">Entry × qty</div>
+</div>
+<div class="kpi" id="calcKpiMargin">
+<div class="label">Benodigde margin</div>
+<div class="value">—</div>
+<div class="sub">Notional / leverage</div>
+</div>
+<div class="kpi" id="calcKpiSL">
+<div class="label">Verlies op stop (incl. fees)</div>
+<div class="value">—</div>
+<div class="sub">Doel ≈ risico</div>
+</div>
+<div class="kpi" id="calcKpiTP">
+<div class="label">Winst op TP (incl. fees)</div>
+<div class="value">—</div>
+<div class="sub">RR: —</div>
+</div>
+</div>
+</div>
+</section>
 <!-- Import -->
-    <section id="view-import" class="grid" style="display:none">
-      <div class="card half">
-        <div style="font-weight:700;margin-bottom:8px">Import CSV</div>
-        <div class="muted small">Upload je exports van BloFin en/of Kraken Pro. We herkennen het formaat automatisch.</div>
-        <div style="margin-top:12px">
-          <input type="file" id="fileInput" accept=".csv">
-        </div>
-        <div class="row" style="margin-top:12px">
-          <button class="primary" id="importBtn">Importeer</button>
-          <span class="muted small" id="importStatus">—</span>
-        </div>
-        <div class="hint">
+<section class="grid" id="view-import" style="display:none">
+<div class="card half">
+<div style="font-weight:700;margin-bottom:8px">Import CSV</div>
+<div class="muted small">Upload je exports van BloFin en/of Kraken Pro. We herkennen het formaat automatisch.</div>
+<div style="margin-top:12px">
+<input accept=".csv" id="fileInput" type="file"/>
+</div>
+<div class="row" style="margin-top:12px">
+<button class="primary" id="importBtn">Importeer</button>
+<span class="muted small" id="importStatus">—</span>
+</div>
+<div class="hint">
           Herkend:
           <ul>
-            <li><span class="mono">BloFin</span>: kolommen zoals “Underlying Asset”, “Order Time”, “PNL”, “Fee”.</li>
-            <li><span class="mono">Kraken</span>: trades/ledgers export (we mappen zoveel mogelijk standaard velden).</li>
-          </ul>
-        </div>
-      </div>
-
-      <div class="card half">
-        <div style="font-weight:700;margin-bottom:8px">Snelle start (jouw meegeleverde bestanden)</div>
-        <div class="muted small">Je kunt hieronder met 1 klik de voorbeeld-bestanden (die je net uploadde) inladen — handig om meteen te zien dat alles werkt.</div>
-        <div class="row" style="margin-top:12px">
-          <button class="ghost" id="loadSamplesBtn">Laad samples</button>
-          <span class="muted small" id="sampleStatus">—</span>
-        </div>
-        <div class="hint">Let op: dit werkt alleen in de desktop/localhost versie die ik voor je heb klaargezet (de sample CSV’s zitten in de map).</div>
-    </section>
-  </main>
-
-  <!-- Dexie (IndexedDB) -->
-  <script src="https://unpkg.com/dexie@4/dist/dexie.min.js"></script>
-  <script src="app.js"></script>
-  <script>
+<li><span class="mono">BloFin</span>: kolommen zoals “Underlying Asset”, “Order Time”, “PNL”, “Fee”.</li>
+<li><span class="mono">Kraken</span>: trades/ledgers export (we mappen zoveel mogelijk standaard velden).</li>
+</ul>
+</div>
+</div>
+<div class="card half">
+<div style="font-weight:700;margin-bottom:8px">Snelle start (jouw meegeleverde bestanden)</div>
+<div class="muted small">Je kunt hieronder met 1 klik de voorbeeld-bestanden (die je net uploadde) inladen — handig om meteen te zien dat alles werkt.</div>
+<div class="row" style="margin-top:12px">
+<button class="ghost" id="loadSamplesBtn">Laad samples</button>
+<span class="muted small" id="sampleStatus">—</span>
+</div>
+<div class="hint">Let op: dit werkt alleen in de desktop/localhost versie die ik voor je heb klaargezet (de sample CSV’s zitten in de map).</div>
+</div><div class="card half" half><div style="font-weight:700;margin-bottom:8px">Stortingen (handmatig)</div><div class="muted small">Vul je netto stortingen per exchange in. Dit wordt lokaal opgeslagen op je apparaat.</div><div style="margin-top:10px"><div class="muted small">Kraken deposits (USD)</div><input id="depKraken" placeholder="0.00" step="0.01" style="width:100%;margin-top:6px" type="number"/></div><div style="margin-top:10px"><div class="muted small">Blofin deposits (USD)</div><input id="depBlofin" placeholder="0.00" step="0.01" style="width:100%;margin-top:6px" type="number"/></div><div class="row" style="margin-top:12px"><button class="primary" id="saveDepositsBtn" type="button">Opslaan</button><span class="muted small" id="depositStatus">—</span></div><div class="hint">Tip: als je geld opneemt, trek dat later af door je depositbedrag te verlagen.</div></div></section>
+</main>
+<!-- Dexie (IndexedDB) -->
+<script src="https://unpkg.com/dexie@4/dist/dexie.min.js"></script>
+<script src="app.js"></script>
+<script>
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('./sw.js');
     }
