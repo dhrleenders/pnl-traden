@@ -24,7 +24,7 @@ const state = {
   marketType: "ALL",
   range: "1w",
   search: "",
-  chartMode: "pnl" // "pnl" or "total"
+  chartMode: "zero" // "zero" or "area"
 };
 
 const els = {
@@ -33,8 +33,6 @@ const els = {
   marketType: document.getElementById("marketType"),
   range: document.getElementById("range"),
   summaryLine: document.getElementById("summaryLine"),
-  dashChartTitle: document.getElementById("dashChartTitle"),
-  dashChartSub: document.getElementById("dashChartSub"),
   fxBadge: document.getElementById("fxBadge"),
   dbBadge: document.getElementById("dbBadge"),
   exportBtn: document.getElementById("exportBtn"),
@@ -42,9 +40,6 @@ const els = {
   exPills: document.getElementById("exPills"),
   collapseBtn: document.getElementById("collapseBtn"),
   collapsibleHeader: document.getElementById("collapsibleHeader"),
-
-  btnChartPnl: document.getElementById("btnChartPnl"),
-  btnChartTotal: document.getElementById("btnChartTotal"),
 
   tabs: document.getElementById("tabs"),
   views: {
@@ -55,7 +50,6 @@ const els = {
     import: document.getElementById("view-import")
   },
 
-  kpiTotal: document.getElementById("kpiTotal"),
   kpiNet: document.getElementById("kpiNet"),
   kpiFees: document.getElementById("kpiFees"),
   kpiWinrate: document.getElementById("kpiWinrate"),
@@ -67,7 +61,9 @@ const els = {
   analyseTrades: document.getElementById("analyseTrades"),
   analyseAvg: document.getElementById("analyseAvg"),
   analyseEquityCanvas: document.getElementById("analyseEquityCanvas"),
-  analyseDailyCanvas: document.getElementById("analyseDailyCanvas"),  equityCanvas: document.getElementById("equityCanvas"),
+  analyseDailyCanvas: document.getElementById("analyseDailyCanvas"),
+  countBadge: document.getElementById("countBadge"),
+  equityCanvas: document.getElementById("equityCanvas"),
 
   // 12 maanden view is removed in v1.7; keep optional refs so older code paths never crash
   monthlyCanvas: document.getElementById("monthlyCanvas"),
@@ -78,11 +74,7 @@ const els = {
   tradeRows: document.getElementById("tradeRows"),
   tradeCount: document.getElementById("tradeCount"),
 
-    depKraken: document.getElementById("depKraken"),
-  depBlofin: document.getElementById("depBlofin"),
-  saveDepositsBtn: document.getElementById("saveDepositsBtn"),
-  depositStatus: document.getElementById("depositStatus"),
-fileInput: document.getElementById("fileInput"),
+  fileInput: document.getElementById("fileInput"),
   importBtn: document.getElementById("importBtn"),
   importStatus: document.getElementById("importStatus"),
   loadSamplesBtn: document.getElementById("loadSamplesBtn"),
@@ -519,7 +511,7 @@ function dailyBuckets(trades, nowRef, daysBack=30){
 // ---------- Charts ----------
 function clearCanvas(ctx){ ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height); }
 
-function drawLineChart(canvas, points, { yLabel = "", percentBase = null, percentMode = "pnl" } = {}) {
+function drawLineChart(canvas, points, { yLabel = "" } = {}) {
   const ctx = canvas.getContext("2d");
   const w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
@@ -623,16 +615,10 @@ function drawLineChart(canvas, points, { yLabel = "", percentBase = null, percen
   // Kraken-like crosshair + tooltip (amount + %) on hover/drag
   try {
     const baseVal = points.length ? (Number(points[0].y) || 0) : 0;
-    const pctBase = (Number.isFinite(percentBase) && Number(percentBase) > 0) ? Number(percentBase) : null;
     const pixelPoints = points.map(p => {
       const t = new Date(p.x).getTime();
       const val = Number(p.y) || 0;
-      let pct = 0;
-      if (pctBase){
-        pct = (percentMode === "total") ? (((val - pctBase) / pctBase) * 100) : ((val / pctBase) * 100);
-      } else if (baseVal){
-        pct = ((val - baseVal) / Math.abs(baseVal)) * 100;
-      }
+      const pct = baseVal ? ((val - baseVal) / Math.abs(baseVal)) * 100 : 0;
       const label = new Date(p.x).toISOString().slice(0, 10);
       return { x: X(t), y: Y(val), val, pct, label };
     });
@@ -688,8 +674,8 @@ function setupInteractiveLineChart(baseCanvas, points, opts = {}) {
   }
   const fmtMoney = (n) => {
     if (!Number.isFinite(n)) return "—";
-    const cur = convertedLabel();
-    return formatMoney(n, cur);
+    const sign = n >= 0 ? "+" : "";
+    return sign + n.toFixed(2);
   };
   const fmtPct = (p) => {
     if (!Number.isFinite(p)) return "—";
@@ -860,34 +846,15 @@ async function renderAll(){
 
   if (els.kpiNet) setKpi(els.kpiNet, formatMoney(netC, convertedLabel()), netC>=0 ? "good":"bad");
   if (els.kpiFees) setKpi(els.kpiFees, formatMoney(feeC, convertedLabel()));
-  if (els.kpiWinrate) setKpi(els.kpiWinrate, formatPct(k.winrate), null, `${k.wins} / ${k.count}`);  els.tradeCount.textContent = `${k.count} trades`;
+  if (els.kpiWinrate) setKpi(els.kpiWinrate, formatPct(k.winrate), null, `${k.wins} / ${k.count}`);
 
-// Equity / charts
-const tradesAsc=[...trades].sort((a,b)=>(a.datetime>b.datetime?1:-1));
-const ptsUsd=buildEquitySeries(tradesAsc);
-const baseUsd = depositBaseUsd || 0;
-
-// Choose chart series
-const seriesUsd = (state.chartMode === "total")
-  ? ptsUsd.map(p => ({ x: p.x, y: baseUsd + (p.y || 0) }))
-  : ptsUsd;
-
-const pts = seriesUsd.map(p => ({ x: p.x, y: convertUsdToSelected(p.y) }));
-const yLabel = (state.chartMode === "total")
-  ? `Totale waarde (${convertedLabel()})`
-  : `Cumulatief PnL (${convertedLabel()})`;
-
-// Percent base = deposits (converted)
-const pctBase = convertUsdToSelected(baseUsd);
-
-drawLineChart(els.equityCanvas, pts, { yLabel, percentBase: pctBase, percentMode: state.chartMode });
-
-if (els.dashChartTitle) els.dashChartTitle.textContent = (state.chartMode === "total") ? "Total chart" : "PnL chart";
-if (els.dashChartSub) {
-  els.dashChartSub.textContent = (state.chartMode === "total")
-    ? "Schatting: stortingen + cumulatieve PnL."
-    : "Cumulatieve Net PnL uit je trades/account-log.";
-}
+  els.countBadge.textContent = `${k.count} trades`;
+  els.tradeCount.textContent = `${k.count} trades`;
+  // Equity
+  const tradesAsc=[...trades].sort((a,b)=>(a.datetime>b.datetime?1:-1));
+  const ptsUsd=buildEquitySeries(tradesAsc);
+  const pts=ptsUsd.map(p=>({x:p.x,y:convertUsdToSelected(p.y)}));
+  drawLineChart(els.equityCanvas, pts, { yLabel:`Cumulatief (${convertedLabel()})` });
 
   // Monthly (view removed; keep as optional so older code doesn't crash)
   if (els.monthlyCanvas && els.monthlyHint) {
@@ -1224,6 +1191,18 @@ els.marketType.addEventListener("change", async()=>{ state.marketType=els.market
 els.range.addEventListener("change", async()=>{ state.range=els.range.value; await renderAll(); });
 els.search.addEventListener("input", async()=>{ state.search=els.search.value; await renderAll(); });
 
+// Chart toggle buttons
+const btnChartZero = document.getElementById("btnChartZero");
+const btnChartArea = document.getElementById("btnChartArea");
+function setChartMode(mode){
+  state.chartMode = mode;
+  btnChartZero?.classList.toggle("active", mode==="zero");
+  btnChartArea?.classList.toggle("active", mode==="area");
+  renderAll();
+}
+btnChartZero?.addEventListener("click", ()=>setChartMode("zero"));
+btnChartArea?.addEventListener("click", ()=>setChartMode("area"));
+
 
 els.importBtn.addEventListener("click", async()=>{
   const f=els.fileInput.files?.[0];
@@ -1246,19 +1225,6 @@ els.importBtn.addEventListener("click", async()=>{
     els.importStatus.textContent="Error: import mislukt.";
   }
 });
-
-// Deposits save (local)
-if (els.saveDepositsBtn) {
-  els.saveDepositsBtn.addEventListener("click", async () => {
-    const k = Number(els.depKraken?.value || 0);
-    const b = Number(els.depBlofin?.value || 0);
-    const dep = { KRAKEN: Number.isFinite(k) ? k : 0, BLOFIN: Number.isFinite(b) ? b : 0 };
-    saveDeposits(dep);
-    if (els.depositStatus) els.depositStatus.textContent = "Opgeslagen ✅";
-    await renderAll();
-  });
-}
-
 
 els.exportBtn.addEventListener("click", async()=>{
   const trades = await db.trades.toArray();
@@ -1284,20 +1250,10 @@ els.resetBtn.addEventListener("click", async()=>{
 
 (async function init(){
   await fetchFxRate();
-
-// Load deposits into UI
-try{
-  const dep = loadDeposits();
-  if (els.depKraken) els.depKraken.value = dep.KRAKEN ? String(dep.KRAKEN) : "";
-  if (els.depBlofin) els.depBlofin.value = dep.BLOFIN ? String(dep.BLOFIN) : "";
-}catch{}
   state.currency=els.currency.value;
   state.exchange=els.exchange.value;
   state.marketType=els.marketType.value;
-  state.range = els.range.value;
-  state.chartMode = "pnl";
-  if (els.btnChartPnl) els.btnChartPnl.classList.add("active");
-  if (els.btnChartTotal) els.btnChartTotal.classList.remove("active");
+  state.range=els.range.value;
 
   state.exchangeFilter = localStorage.getItem("pnl_exchange_filter") || "ALL";
   if (els.exPills){
@@ -1332,14 +1288,4 @@ try{
     await syncFromApiIntoDb();
     await renderAll();
   }, REFRESH_MS);
-})()
-const deposits = loadDeposits();
-const depositBaseUsd = depositsForCurrentExchange(deposits);
-const depositBaseC = convertUsdToSelected(depositBaseUsd);
-const totalValueC = depositBaseC + convertUsdToSelected(k.net);
-// Total value KPI
-if (els.kpiTotal){
-  setKpi(els.kpiTotal, formatMoney(totalValueC, convertedLabel()), totalValueC >= depositBaseC ? "good" : "bad",
-    `Stortingen: ${formatMoney(depositBaseC, convertedLabel())}`);
-}
-;
+})();
