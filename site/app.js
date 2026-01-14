@@ -57,9 +57,7 @@ const state = {
   range: "1w",
   search: "",
   chartMode: "pnl" // "pnl" or "total"
-  ,calMonth: null, // month number 1-12
-  calYear: null,  // 4-digit
-  calSelected: null // YYYY-MM-DD selected day
+  ,calMonth: null // YYYY-MM for analyse calendar
 };
 
 const els = {
@@ -102,11 +100,7 @@ const els = {
   analyseTrades: document.getElementById("analyseTrades"),
 
   calMonth: document.getElementById("calMonth"),
-    calYear: document.getElementById("calYear"),
-  calPrev: document.getElementById("calPrev"),
-  calNext: document.getElementById("calNext"),
-  calDetails: document.getElementById("calDetails"),
-calGrid: document.getElementById("calGrid"),
+  calGrid: document.getElementById("calGrid"),
   calTotalPnl: document.getElementById("calTotalPnl"),
   calTotalPct: document.getElementById("calTotalPct"),
   calWinDays: document.getElementById("calWinDays"),
@@ -1401,80 +1395,42 @@ function dateKeyUTC(d){
   const day=String(d.getUTCDate()).padStart(2,'0');
   return `${y}-${m}-${day}`;
 }
-
 function renderAnalyseCalendar(tradesAll, deposits){
   if(!els.calMonth || !els.calGrid) return;
 
-  // Build available year-month set from trades (UTC)
-  const ymSet = new Set();
-  const yearSet = new Set();
-  for (const t of tradesAll){
-    if(!t.datetime) continue;
-    const d = new Date(t.datetime);
-    if(isNaN(d)) continue;
-    const y = d.getUTCFullYear();
-    const m = d.getUTCMonth() + 1;
-    yearSet.add(y);
-    ymSet.add(`${y}-${String(m).padStart(2,'0')}`);
-  }
-  const years = Array.from(yearSet).sort((a,b)=>b-a);
-  const monthsAvail = Array.from(ymSet);
-
-  if(years.length===0){
+  const months=getMonthOptions(tradesAll);
+  if(months.length===0){
+    els.calMonth.innerHTML='';
     els.calGrid.innerHTML='';
     if(els.calTotalPnl) els.calTotalPnl.textContent='—';
     if(els.calTotalPct) els.calTotalPct.textContent='—';
     if(els.calWinDays) els.calWinDays.textContent='—';
     if(els.calLoseDays) els.calLoseDays.textContent='—';
     if(els.calBeDays) els.calBeDays.textContent='—';
-    if(els.calDetails) els.calDetails.innerHTML='';
     return;
   }
 
-  // Default year/month = most recent trade month
-  // Find most recent ym
-  let mostRecent = null;
-  for (const ym of monthsAvail){
-    if(!mostRecent || ym > mostRecent) mostRecent = ym;
+  // build select once / keep current selection
+  if(!state.calMonth || !months.includes(state.calMonth)) state.calMonth = months[0];
+  if(els.calMonth.options.length !== months.length){
+    els.calMonth.innerHTML = months.map(ym=>`<option value="${ym}">${ym}</option>`).join('');
   }
-  const mr = parseYM(mostRecent);
-  if(!state.calYear) state.calYear = mr.y;
-  if(!state.calMonth) state.calMonth = mr.m;
+  els.calMonth.value = state.calMonth;
 
-  // Populate Year select
-  if(els.calYear){
-    if(els.calYear.options.length !== years.length){
-      els.calYear.innerHTML = years.map(y=>`<option value="${y}">${y}</option>`).join('');
-    }
-    els.calYear.value = String(state.calYear);
-  }
-
-  // Populate Month select (01-12)
-  const monthLabels = ["01","02","03","04","05","06","07","08","09","10","11","12"];
-  if(els.calMonth){
-    if(els.calMonth.options.length !== 12){
-      els.calMonth.innerHTML = monthLabels.map(mm=>`<option value="${mm}">${mm}</option>`).join('');
-    }
-    els.calMonth.value = String(state.calMonth).padStart(2,'0');
-  }
-
-  const y = Number(state.calYear);
-  const m = Number(state.calMonth);
-  const ymKey = `${y}-${String(m).padStart(2,'0')}`;
-
+  const {y, m}=parseYM(state.calMonth);
   const first = new Date(Date.UTC(y, m-1, 1));
   const nextMonth = new Date(Date.UTC(y, m, 1));
-  const daysInMonth = Math.round((nextMonth - first) / (24*3600*1000));
+  const daysInMonth = Math.round((nextMonth-first)/(24*3600*1000));
 
-  // Daily pnl map for selected month
+  // aggregate daily pnl in USD (already netPnlUsd)
   const daily = new Map();
   for(const t of tradesAll){
     if(!t.datetime) continue;
-    const d = new Date(t.datetime);
+    const d=new Date(t.datetime);
     if(isNaN(d)) continue;
-    if(d.getUTCFullYear() !== y) continue;
-    if((d.getUTCMonth()+1) !== m) continue;
-    const k = dateKeyUTC(d);
+    const ym=fmtYM(d);
+    if(ym !== state.calMonth) continue;
+    const k=dateKeyUTC(d);
     const v = Number(t.netPnlUsd||0);
     daily.set(k, (daily.get(k)||0) + (isFinite(v)?v:0));
   }
@@ -1490,7 +1446,7 @@ function renderAnalyseCalendar(tradesAll, deposits){
     const d=new Date(Date.UTC(y, m-1, day));
     const k=dateKeyUTC(d);
     const pnlUsd = daily.get(k) || 0;
-    cells.push({blank:false, day, pnlUsd, dateKey:k});
+    cells.push({blank:false, day, pnlUsd});
   }
   for(let i=0;i<padAfter;i++) cells.push({blank:true});
 
@@ -1506,135 +1462,27 @@ function renderAnalyseCalendar(tradesAll, deposits){
     const cls = c.pnlUsd > eps ? 'gain' : (c.pnlUsd < -eps ? 'loss' : 'flat');
     const val = pnlConv(c.pnlUsd);
     const show = Math.abs(val) < 0.005 ? '0.00' : val.toFixed(2);
-    const sign = c.pnlUsd===0 ? '' : (c.pnlUsd>0?'+':'');
-    const selected = (state.calSelected && state.calSelected===c.dateKey) ? ' selected' : '';
-    return `<div class="calDay ${cls}${selected}" data-date="${c.dateKey}">
+    return `<div class="calDay ${cls}" data-day="${c.day}">
       <div class="n">${c.day}</div>
-      <div class="v">${c.pnlUsd===0?'' : `${sign}${show}`}</div>
+      <div class="v">${c.pnlUsd===0?'' : (c.pnlUsd>0?'+':'')}${show}</div>
     </div>`;
   }).join('');
 
   els.calGrid.innerHTML = html;
 
-  // Summary
-  const baseUsd = depositsForCurrentExchange(deposits) || 0;
-  const pct = baseUsd ? (totalPnlUsd / baseUsd) : 0;
+  // summary
+  const totalPnl = pnlConv(totalPnlUsd);
+  if(els.calTotalPnl) els.calTotalPnl.textContent = formatMoney(totalPnl, convertedLabel());
 
-  if(els.calTotalPnl) els.calTotalPnl.textContent = formatMoney(pnlConv(totalPnlUsd), convertedLabel());
-  if(els.calTotalPct) els.calTotalPct.textContent = baseUsd ? (pct*100).toFixed(2) + "%" : "—";
+  // pct based on deposits base (per exchange filter), NOT affected by range
+  const baseUsd = depositsForExchange(state.exchangeFilter) || 0;
+  const pct = baseUsd ? (totalPnlUsd / baseUsd) * 100 : null;
+  if(els.calTotalPct) els.calTotalPct.textContent = (pct===null ? '—' : `${pct.toFixed(2)}%`);
+
   if(els.calWinDays) els.calWinDays.textContent = String(win);
   if(els.calLoseDays) els.calLoseDays.textContent = String(lose);
   if(els.calBeDays) els.calBeDays.textContent = String(be);
-
-  // Click handler (delegated)
-  if(!els.calGrid._boundClick){
-    els.calGrid.addEventListener("click", async (ev)=>{
-      const cell = ev.target.closest(".calDay");
-      if(!cell || cell.classList.contains("blank")) return;
-      const dateKey = cell.getAttribute("data-date");
-      if(!dateKey) return;
-      state.calSelected = dateKey;
-      // re-render to show selected outline
-      renderAnalyseCalendar(tradesAll, deposits);
-      await renderCalendarDetails(tradesAll, dateKey);
-    });
-    els.calGrid._boundClick = true;
-  }
-
-  // Month navigation buttons
-  const nav = (delta)=>{
-    let yy = Number(state.calYear);
-    let mm = Number(state.calMonth);
-    mm += delta;
-    if(mm<=0){ mm=12; yy-=1; }
-    if(mm>=13){ mm=1; yy+=1; }
-    state.calYear = yy;
-    state.calMonth = mm;
-    state.calSelected = null;
-    if(els.calYear) els.calYear.value = String(yy);
-    if(els.calMonth) els.calMonth.value = String(mm).padStart(2,'0');
-    if(els.calDetails) els.calDetails.innerHTML='';
-    renderAnalyseCalendar(tradesAll, deposits);
-  };
-
-  if(els.calPrev && !els.calPrev._bound){
-    els.calPrev.addEventListener("click", ()=>nav(-1));
-    els.calPrev._bound = true;
-  }
-  if(els.calNext && !els.calNext._bound){
-    els.calNext.addEventListener("click", ()=>nav(1));
-    els.calNext._bound = true;
-  }
-
-  // Year/month selects
-  if(els.calYear && !els.calYear._bound){
-    els.calYear.addEventListener("change", ()=>{
-      state.calYear = Number(els.calYear.value);
-      state.calSelected = null;
-      if(els.calDetails) els.calDetails.innerHTML='';
-      renderAnalyseCalendar(tradesAll, deposits);
-    });
-    els.calYear._bound = true;
-  }
-  if(els.calMonth && !els.calMonth._bound){
-    els.calMonth.addEventListener("change", ()=>{
-      state.calMonth = Number(els.calMonth.value);
-      state.calSelected = null;
-      if(els.calDetails) els.calDetails.innerHTML='';
-      renderAnalyseCalendar(tradesAll, deposits);
-    });
-    els.calMonth._bound = true;
-  }
-
-  // Ensure details show something if a day already selected
-  if(state.calSelected){
-    renderCalendarDetails(tradesAll, state.calSelected);
-  } else if (els.calDetails){
-    els.calDetails.innerHTML = '';
-  }
 }
-
-async function renderCalendarDetails(tradesAll, dateKey){
-  if(!els.calDetails) return;
-  // Filter trades by UTC dateKey
-  const dayTrades = tradesAll.filter(t=>{
-    if(!t.datetime) return false;
-    const d=new Date(t.datetime);
-    if(isNaN(d)) return false;
-    return dateKeyUTC(d) === dateKey;
-  }).sort((a,b)=> (a.datetime>b.datetime?1:-1));
-
-  const pnlUsd = dayTrades.reduce((s,t)=>s+(Number(t.netPnlUsd)||0),0);
-  const feeUsd = dayTrades.reduce((s,t)=>s+(Number(t.feesUsd)||0),0);
-  const cnt = dayTrades.length;
-
-  const rowsHtml = dayTrades.slice(0,25).map(t=>{
-    const dt = new Date(t.datetime);
-    const dtLabel = dt.toLocaleString("nl-NL", { year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" });
-    const net = convertUsdToSelected(Number(t.netPnlUsd)||0);
-    const cls = net>=0 ? "pos":"neg";
-    return `<tr>
-      <td class="mono">${dtLabel}</td>
-      <td>${t.exchange||""}</td>
-      <td class="mono">${t.symbol||""}</td>
-      <td class="right mono ${cls}">${formatMoney(net, convertedLabel())}</td>
-    </tr>`;
-  }).join("");
-
-  els.calDetails.innerHTML = `
-    <div class="title">${dateKey} • ${cnt} trades</div>
-    <div class="muted small" style="margin-bottom:8px">
-      Day Net: <span class="${(pnlUsd>=0?'pos':'neg')}">${formatMoney(convertUsdToSelected(pnlUsd), convertedLabel())}</span>
-      • Fees: ${formatMoney(convertUsdToSelected(feeUsd), convertedLabel())}
-    </div>
-    <table>
-      <tr><td class="muted small">Time</td><td class="muted small">Ex</td><td class="muted small">Symbol</td><td class="muted small right">Net</td></tr>
-      ${rowsHtml || `<tr><td colspan="4" class="muted small">Geen trades.</td></tr>`}
-    </table>
-    ${cnt>25?`<div class="muted small" style="margin-top:6px">Toont 25/${cnt} trades.</div>`:""}
-  `;
-}
-
 
 (async function init(){
   await fetchFxRate();
