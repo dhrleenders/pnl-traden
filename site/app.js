@@ -59,7 +59,8 @@ const state = {
   chartMode: "pnl" // "pnl" or "total"
   ,calMonth: null, // month number 1-12
   calYear: null,  // 4-digit
-  calSelected: null // YYYY-MM-DD selected day
+  calSelected: null, // YYYY-MM-DD selected day
+  calView: 'day' // 'day' | 'week' | 'month'
 };
 
 const els = {
@@ -102,6 +103,10 @@ const els = {
   analyseTrades: document.getElementById("analyseTrades"),
 
   calMonth: document.getElementById("calMonth"),
+  calViewDay: document.getElementById("calViewDay"),
+  calViewWeek: document.getElementById("calViewWeek"),
+  calViewMonth: document.getElementById("calViewMonth"),
+  calHead: document.getElementById("calHead"),
     calYear: document.getElementById("calYear"),
   calPrev: document.getElementById("calPrev"),
   calNext: document.getElementById("calNext"),
@@ -114,6 +119,10 @@ calGrid: document.getElementById("calGrid"),
   calBeDays: document.getElementById("calBeDays"),
 
   calMonth: document.getElementById("calMonth"),
+  calViewDay: document.getElementById("calViewDay"),
+  calViewWeek: document.getElementById("calViewWeek"),
+  calViewMonth: document.getElementById("calViewMonth"),
+  calHead: document.getElementById("calHead"),
   calGrid: document.getElementById("calGrid"),
   calTotalPnl: document.getElementById("calTotalPnl"),
   calTotalPct: document.getElementById("calTotalPct"),
@@ -277,6 +286,57 @@ async function fetchJsonWithTimeout(url, timeoutMs){
     clearTimeout(t);
   }
 }
+
+
+function isRealTradeRow(t){
+  const side = String(t.side || "").toUpperCase();
+  const notes = String(t.notes || "").toLowerCase();
+
+  // Exclude common non-trade events
+  if (side.includes("FUNDING")) return false;
+  if (side.includes("FEE")) return false;
+  if (side.includes("TRANSFER")) return false;
+  if (side.includes("DEPOSIT")) return false;
+  if (side.includes("WITHDRAW")) return false;
+  if (notes.includes("funding")) return false;
+  if (notes.includes("fee")) return false;
+  if (notes.includes("account log")) return false;
+  if (notes.includes("account-log")) return false;
+
+  // Include obvious trades
+  if (side === "BUY" || side === "SELL") return true;
+  if (side.includes("FUTURES TRADE")) return true;
+
+  // Shape-based fallback: has qty or trade price (common for fills)
+  const qty = Number(t.qty || 0);
+  const price = Number(t.price || 0);
+  return (isFinite(qty) && qty !== 0) || (isFinite(price) && price !== 0);
+}
+
+function rangeLabelNL(kind, startIso, endIso){
+  // endIso is exclusive
+  const s = new Date(startIso);
+  const e = new Date(new Date(endIso).getTime() - 1);
+  const fmtDay = (d)=> d.toLocaleDateString("nl-NL",{year:"numeric",month:"2-digit",day:"2-digit"});
+  if(kind==="day") return fmtDay(s);
+  if(kind==="week" || kind==="month") return `${fmtDay(s)} – ${fmtDay(e)}`;
+  return `${fmtDay(s)} – ${fmtDay(e)}`;
+}
+
+function startOfWeekUTC(d){
+  // Monday start
+  const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const dow = (x.getUTCDay()+6)%7; // Mon=0..Sun=6
+  x.setUTCDate(x.getUTCDate() - dow);
+  return x;
+}
+
+function addDaysUTC(d, n){
+  const x = new Date(d.getTime());
+  x.setUTCDate(x.getUTCDate() + n);
+  return x;
+}
+
 
 // ---------- CSV parsing ----------
 function parseCsv(text){
@@ -1462,59 +1522,153 @@ function renderAnalyseCalendar(tradesAll, deposits){
   const m = Number(state.calMonth);
   const ymKey = `${y}-${String(m).padStart(2,'0')}`;
 
-  const first = new Date(Date.UTC(y, m-1, 1));
-  const nextMonth = new Date(Date.UTC(y, m, 1));
-  const daysInMonth = Math.round((nextMonth - first) / (24*3600*1000));
-
-  // Daily pnl map for selected month
-  const daily = new Map();
-  for(const t of tradesAll){
-    if(!t.datetime) continue;
-    const d = new Date(t.datetime);
-    if(isNaN(d)) continue;
-    if(d.getUTCFullYear() !== y) continue;
-    if((d.getUTCMonth()+1) !== m) continue;
-    const k = dateKeyUTC(d);
-    const v = Number(t.netPnlUsd||0);
-    daily.set(k, (daily.get(k)||0) + (isFinite(v)?v:0));
-  }
-
-  // calendar starts Monday (Mon=0..Sun=6)
-  const dow = (first.getUTCDay()+6)%7; // Sun->6, Mon->0
-  const cells = [];
-  const totalCells = dow + daysInMonth;
-  const padAfter = (7 - (totalCells%7))%7;
-
-  for(let i=0;i<dow;i++) cells.push({blank:true});
-  for(let day=1; day<=daysInMonth; day++){
-    const d=new Date(Date.UTC(y, m-1, day));
-    const k=dateKeyUTC(d);
-    const pnlUsd = daily.get(k) || 0;
-    cells.push({blank:false, day, pnlUsd, dateKey:k});
-  }
-  for(let i=0;i<padAfter;i++) cells.push({blank:true});
-
+  
+  // View mode: day (current month), week (weeks in current month), month (months in selected year)
   const pnlConv = (usd)=> convertUsdToSelected(usd);
   const eps = 0.0000001;
-  let totalPnlUsd=0, win=0, lose=0, be=0;
 
-  const html = cells.map(c=>{
-    if(c.blank) return `<div class="calDay blank"></div>`;
-    totalPnlUsd += c.pnlUsd;
-    if(c.pnlUsd > eps) win++; else if(c.pnlUsd < -eps) lose++; else be++;
+  // Toggle header + grid layout
+  if (els.calHead) els.calHead.style.display = (state.calView === 'day') ? '' : 'none';
+  if (els.calGrid){
+    els.calGrid.classList.remove('week','month');
+    if (state.calView === 'week') els.calGrid.classList.add('week');
+    if (state.calView === 'month') els.calGrid.classList.add('month');
+  }
 
-    const cls = c.pnlUsd > eps ? 'gain' : (c.pnlUsd < -eps ? 'loss' : 'flat');
-    const val = pnlConv(c.pnlUsd);
-    const show = Math.abs(val) < 0.005 ? '0.00' : val.toFixed(2);
-    const sign = c.pnlUsd===0 ? '' : (c.pnlUsd>0?'+':'');
-    const selected = (state.calSelected && state.calSelected===c.dateKey) ? ' selected' : '';
-    return `<div class="calDay ${cls}${selected}" data-date="${c.dateKey}">
-      <div class="n">${c.day}</div>
-      <div class="v">${c.pnlUsd===0?'' : `${sign}${show}`}</div>
-    </div>`;
-  }).join('');
+  let totalPnlUsd = 0, win=0, lose=0, be=0;
+  let html = "";
+
+  if (state.calView === 'month') {
+    // 12 month tiles for selected year (ignore month selector for grid)
+    const monthTiles = [];
+    for (let mm=1; mm<=12; mm++){
+      const start = new Date(Date.UTC(y, mm-1, 1));
+      const end = new Date(Date.UTC(y, mm, 1));
+      let pnl = 0;
+      for(const t of tradesAll){
+        if(!t.datetime) continue;
+        const d = new Date(t.datetime);
+        if(isNaN(d)) continue;
+        if(d >= start && d < end){
+          pnl += Number(t.netPnlUsd||0);
+        }
+      }
+      monthTiles.push({mm, start, end, pnl});
+    }
+
+    html = monthTiles.map(t=>{
+      totalPnlUsd += t.pnl;
+      if(t.pnl > eps) win++; else if(t.pnl < -eps) lose++; else be++;
+      const cls = t.pnl > eps ? 'gain' : (t.pnl < -eps ? 'loss' : 'flat');
+      const val = pnlConv(t.pnl);
+      const show = Math.abs(val) < 0.005 ? '0.00' : val.toFixed(2);
+      const sign = t.pnl===0 ? '' : (t.pnl>0?'+':'');
+      const selected = (state.calSelected && state.calSelected===`${y}-${String(t.mm).padStart(2,'0')}`) ? ' selected' : '';
+      return `<div class="calDay monthCell ${cls}${selected}" data-kind="month" data-start="${t.start.toISOString()}" data-end="${t.end.toISOString()}" data-key="${y}-${String(t.mm).padStart(2,'0')}">
+        <div class="n">${String(t.mm).padStart(2,'0')}</div>
+        <div class="v">${t.pnl===0?'' : `${sign}${show}`}</div>
+        <div class="sub">${y}</div>
+      </div>`;
+    }).join("");
+
+  } else if (state.calView === 'week') {
+    // Weeks that intersect the selected month
+    const monthStart = new Date(Date.UTC(y, m-1, 1));
+    const monthEnd = new Date(Date.UTC(y, m, 1));
+
+    const firstWeekStart = startOfWeekUTC(monthStart);
+    const weekTiles = [];
+    for (let ws = new Date(firstWeekStart); ws < monthEnd; ws = addDaysUTC(ws, 7)){
+      const we = addDaysUTC(ws, 7);
+      // Sum pnl for dates in [ws, we), but only count days that intersect current month
+      let pnl = 0;
+      for(const t of tradesAll){
+        if(!t.datetime) continue;
+        const d = new Date(t.datetime);
+        if(isNaN(d)) continue;
+        if(d >= ws && d < we){
+          // intersect check with month
+          if(d >= monthStart && d < monthEnd){
+            pnl += Number(t.netPnlUsd||0);
+          }
+        }
+      }
+      // Label like W02
+      const jan1 = new Date(Date.UTC(y,0,1));
+      const weekNo = Math.floor((startOfWeekUTC(ws) - startOfWeekUTC(jan1)) / (7*24*3600*1000)) + 1;
+      weekTiles.push({ws, we, pnl, weekNo});
+    }
+
+    html = weekTiles.map(t=>{
+      totalPnlUsd += t.pnl;
+      if(t.pnl > eps) win++; else if(t.pnl < -eps) lose++; else be++;
+      const cls = t.pnl > eps ? 'gain' : (t.pnl < -eps ? 'loss' : 'flat');
+      const val = pnlConv(t.pnl);
+      const show = Math.abs(val) < 0.005 ? '0.00' : val.toFixed(2);
+      const sign = t.pnl===0 ? '' : (t.pnl>0?'+':'');
+      const key = `${y}-W${String(t.weekNo).padStart(2,'0')}`;
+      const selected = (state.calSelected && state.calSelected===key) ? ' selected' : '';
+      const sLab = new Date(t.ws).toLocaleDateString("nl-NL",{month:"2-digit",day:"2-digit"});
+      const eLab = new Date(addDaysUTC(t.we, -1)).toLocaleDateString("nl-NL",{month:"2-digit",day:"2-digit"});
+      return `<div class="calDay weekCell ${cls}${selected}" data-kind="week" data-start="${t.ws.toISOString()}" data-end="${t.we.toISOString()}" data-key="${key}">
+        <div class="n">W${String(t.weekNo).padStart(2,'0')}</div>
+        <div class="v">${t.pnl===0?'' : `${sign}${show}`}</div>
+        <div class="sub">${sLab}–${eLab}</div>
+      </div>`;
+    }).join("");
+
+  } else {
+    // DAY view: month grid (Mon-Sun)
+    const first = new Date(Date.UTC(y, m-1, 1));
+    const nextMonth = new Date(Date.UTC(y, m, 1));
+    const daysInMonth = Math.round((nextMonth - first) / (24*3600*1000));
+
+    // Daily pnl map for selected month
+    const daily = new Map();
+    for(const t of tradesAll){
+      if(!t.datetime) continue;
+      const d = new Date(t.datetime);
+      if(isNaN(d)) continue;
+      if(d.getUTCFullYear() !== y) continue;
+      if((d.getUTCMonth()+1) !== m) continue;
+      const k = dateKeyUTC(d);
+      const v = Number(t.netPnlUsd||0);
+      daily.set(k, (daily.get(k)||0) + (isFinite(v)?v:0));
+    }
+
+    const dow = (first.getUTCDay()+6)%7; // Sun->6, Mon->0
+    const cells = [];
+    const totalCells = dow + daysInMonth;
+    const padAfter = (7 - (totalCells%7))%7;
+
+    for(let i=0;i<dow;i++) cells.push({blank:true});
+    for(let day=1; day<=daysInMonth; day++){
+      const d=new Date(Date.UTC(y, m-1, day));
+      const k=dateKeyUTC(d);
+      const pnlUsd = daily.get(k) || 0;
+      cells.push({blank:false, day, pnlUsd, dateKey:k});
+    }
+    for(let i=0;i<padAfter;i++) cells.push({blank:true});
+
+    html = cells.map(c=>{
+      if(c.blank) return `<div class="calDay blank"></div>`;
+      totalPnlUsd += c.pnlUsd;
+      if(c.pnlUsd > eps) win++; else if(c.pnlUsd < -eps) lose++; else be++;
+
+      const cls = c.pnlUsd > eps ? 'gain' : (c.pnlUsd < -eps ? 'loss' : 'flat');
+      const val = pnlConv(c.pnlUsd);
+      const show = Math.abs(val) < 0.005 ? '0.00' : val.toFixed(2);
+      const sign = c.pnlUsd===0 ? '' : (c.pnlUsd>0?'+':'');
+      const selected = (state.calSelected && state.calSelected===c.dateKey) ? ' selected' : '';
+      return `<div class="calDay ${cls}${selected}" data-kind="day" data-start="${new Date(Date.UTC(y,m-1,c.day)).toISOString()}" data-end="${new Date(Date.UTC(y,m-1,c.day+1)).toISOString()}" data-key="${c.dateKey}">
+        <div class="n">${c.day}</div>
+        <div class="v">${c.pnlUsd===0?'' : `${sign}${show}`}</div>
+      </div>`;
+    }).join('');
+  }
 
   els.calGrid.innerHTML = html;
+
 
   // Summary
   const baseUsd = depositsForCurrentExchange(deposits) || 0;
@@ -1531,12 +1685,17 @@ function renderAnalyseCalendar(tradesAll, deposits){
     els.calGrid.addEventListener("click", async (ev)=>{
       const cell = ev.target.closest(".calDay");
       if(!cell || cell.classList.contains("blank")) return;
-      const dateKey = cell.getAttribute("data-date");
-      if(!dateKey) return;
-      state.calSelected = dateKey;
-      // re-render to show selected outline
+      const kind = cell.getAttribute('data-kind') || 'day';
+      const startIso = cell.getAttribute('data-start');
+      const endIso = cell.getAttribute('data-end');
+      const key = cell.getAttribute('data-key') || '';
+      state.calSelected = key || null;
       renderAnalyseCalendar(tradesAll, deposits);
-      await renderCalendarDetails(tradesAll, dateKey);
+      if(kind==='day'){
+        await renderCalendarDetails(tradesAll, key);
+      } else {
+        await renderCalendarDetailsRange(tradesAll, startIso, endIso, kind);
+      }
     });
     els.calGrid._boundClick = true;
   }
@@ -1586,6 +1745,39 @@ function renderAnalyseCalendar(tradesAll, deposits){
     els.calMonth._bound = true;
   }
 
+
+  // Calendar view buttons
+  const setView = (v)=>{
+    state.calView = v;
+    // reset selection + details
+    state.calSelected = null;
+    if(els.calDetails) els.calDetails.innerHTML='';
+    // button UI
+    const btns = [
+      [els.calViewDay,'day'],
+      [els.calViewWeek,'week'],
+      [els.calViewMonth,'month']
+    ];
+    for(const [b,val] of btns){
+      if(!b) continue;
+      b.classList.toggle('active', v===val);
+    }
+    renderAnalyseCalendar(tradesAll, deposits);
+  };
+
+  if(els.calViewDay && !els.calViewDay._bound){
+    els.calViewDay.addEventListener('click', ()=>setView('day'));
+    els.calViewDay._bound = true;
+  }
+  if(els.calViewWeek && !els.calViewWeek._bound){
+    els.calViewWeek.addEventListener('click', ()=>setView('week'));
+    els.calViewWeek._bound = true;
+  }
+  if(els.calViewMonth && !els.calViewMonth._bound){
+    els.calViewMonth.addEventListener('click', ()=>setView('month'));
+    els.calViewMonth._bound = true;
+  }
+
   // Ensure details show something if a day already selected
   if(state.calSelected){
     renderCalendarDetails(tradesAll, state.calSelected);
@@ -1633,6 +1825,51 @@ async function renderCalendarDetails(tradesAll, dateKey){
     </table>
     ${cnt>25?`<div class="muted small" style="margin-top:6px">Toont 25/${cnt} trades.</div>`:""}
   `;
+
+function renderCalendarDetailsRange(tradesAll, startIso, endIso, kind){
+  if(!els.calDetails) return;
+  const start = new Date(startIso);
+  const end = new Date(endIso); // exclusive
+  const items = tradesAll.filter(t=>{
+    if(!t.datetime) return false;
+    const d = new Date(t.datetime);
+    if(isNaN(d)) return false;
+    return d >= start && d < end;
+  }).filter(isRealTradeRow).sort((a,b)=> (a.datetime>b.datetime?1:-1));
+
+  const pnlUsd = items.reduce((s,t)=>s+(Number(t.netPnlUsd)||0),0);
+  const feeUsd = items.reduce((s,t)=>s+(Number(t.feesUsd)||0),0);
+  const cnt = items.length;
+  const title = rangeLabelNL(kind, startIso, endIso);
+
+  const rowsHtml = items.slice(0,50).map(t=>{
+    const dt = new Date(t.datetime);
+    const dtLabel = dt.toLocaleString("nl-NL", { year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" });
+    const net = convertUsdToSelected(Number(t.netPnlUsd)||0);
+    const cls = net>=0 ? "pos":"neg";
+    return `<tr>
+      <td class="mono">${dtLabel}</td>
+      <td>${t.exchange||""}</td>
+      <td class="mono">${t.symbol||""}</td>
+      <td class="right mono ${cls}">${formatMoney(net, convertedLabel())}</td>
+    </tr>`;
+  }).join("");
+
+  els.calDetails.innerHTML = `
+    <div class="title">${title} • ${cnt} trades</div>
+    <div class="muted small" style="margin-bottom:8px">
+      Net: <span class="${(pnlUsd>=0?'pos':'neg')}">${formatMoney(convertUsdToSelected(pnlUsd), convertedLabel())}</span>
+      • Fees: ${formatMoney(convertUsdToSelected(feeUsd), convertedLabel())}
+    </div>
+    <table>
+      <tr><td class="muted small">Time</td><td class="muted small">Ex</td><td class="muted small">Symbol</td><td class="muted small right">Net</td></tr>
+      ${rowsHtml || `<tr><td colspan="4" class="muted small">Geen trades.</td></tr>`}
+    </table>
+    ${cnt>50?`<div class="muted small" style="margin-top:6px">Toont 50/${cnt} trades.</div>`:""}
+  `;
+}
+
+
 }
 
 

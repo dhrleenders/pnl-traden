@@ -173,6 +173,17 @@
 .calDetails td{padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}
 .calDetails tr:last-child td{border-bottom:0}
 
+
+/* Calendar view toggle */
+.seg{display:flex;gap:6px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);padding:4px;border-radius:999px}
+.segBtn{background:transparent;border:0;color:rgba(255,255,255,.85);padding:6px 10px;border-radius:999px;font-weight:600}
+.segBtn.active{background:rgba(255,255,255,.14);color:#fff}
+.segBtn:active{transform:translateY(1px)}
+.calGrid.week,.calGrid.month{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(min-width:720px){.calGrid.week,.calGrid.month{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.calDay.weekCell,.calDay.monthCell{min-height:74px}
+.calDay .sub{font-size:11px;opacity:.7;margin-top:2px}
+
 </style>
 </head>
 <body>
@@ -320,12 +331,18 @@
       <select id="calYear" class="in" style="max-width:110px"></select>
       <select id="calMonth" class="in" style="max-width:90px"></select>
       <button id="calNext" class="btn small" type="button">›</button>
-    </div>
+    
+      <div class="seg" id="calViewSeg" style="margin-left:auto">
+        <button id="calViewDay" class="segBtn active" type="button">Dag</button>
+        <button id="calViewWeek" class="segBtn" type="button">Week</button>
+        <button id="calViewMonth" class="segBtn" type="button">Maand</button>
+      </div>
+</div>
   </div>
 
   <div class="calWrap">
     <div>
-      <div class="calHead">
+      <div class="calHead" id="calHead">
         <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
       </div>
       <div id="calGrid" class="calGrid"></div>
