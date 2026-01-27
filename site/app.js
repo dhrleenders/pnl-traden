@@ -60,9 +60,7 @@ const state = {
   ,calMonth: null, // month number 1-12
   calYear: null,  // 4-digit
   calSelected: null, // YYYY-MM-DD selected day
-  calView: 'day', // 'day' | 'week' | 'month'
-  coachInput: null,
-  coachTone: 'neutral'
+  calView: 'day' // 'day' | 'week' | 'month'
 };
 
 const els = {
@@ -90,8 +88,7 @@ const els = {
     analyse: document.getElementById("view-analyse"),
     trades: document.getElementById("view-trades"),
     calc: document.getElementById("view-calc"),
-    import: document.getElementById("view-import"),
-    coach: document.getElementById("view-coach")
+    import: document.getElementById("view-import")
   },
 
   kpiTotal: document.getElementById("kpiTotal"),
@@ -598,134 +595,35 @@ async function getTradesForTotalKpi(){
   return items;
 }
 
-// ---------- Coach (lightweight, no build) ----------
-function median(arr){
-  const a = (arr||[]).filter(x=>Number.isFinite(x)).slice().sort((x,y)=>x-y);
-  if(!a.length) return null;
-  const mid = Math.floor(a.length/2);
-  return a.length%2 ? a[mid] : (a[mid-1]+a[mid])/2;
+function isRealTrade(t){
+  // Exclude fee/funding-only rows while keeping net/fees math intact elsewhere.
+  // Heuristics: real trade usually has side buy/sell AND qty>0 AND price>0.
+  const side = String(t.side||"").toLowerCase();
+  const hasSide = (side==="buy" || side==="sell");
+  const qty = Number(t.qty||0);
+  const price = Number(t.price||0);
+
+  // Many non-trade rows have qty/price 0 and empty side.
+  if(hasSide && qty>0 && price>0) return true;
+
+  // Fallback: some exchanges may omit side but still have qty+price.
+  if(qty>0 && price>0) return true;
+
+  return false;
 }
-function quantile(arr, q){
-  const a = (arr||[]).filter(x=>Number.isFinite(x)).slice().sort((x,y)=>x-y);
-  if(!a.length) return null;
-  const pos = (a.length-1)*q;
-  const base = Math.floor(pos);
-  const rest = pos - base;
-  if(a[base+1]===undefined) return a[base];
-  return a[base] + rest*(a[base+1]-a[base]);
-}
-function iqr(arr){
-  const q1 = quantile(arr, 0.25);
-  const q3 = quantile(arr, 0.75);
-  if(q1==null || q3==null) return null;
-  return q3 - q1;
-}
-function groupTradesByIsoDay(trades){
-  const map = new Map();
-  for(const t of (trades||[])){
-    const k = String(t.datetime||"").slice(0,10);
-    if(!k) continue;
-    map.set(k, (map.get(k)||0)+1);
-  }
-  return map;
-}
-function medianMinutesBetweenTrades(tradesAsc){
-  const mins=[];
-  for(let i=1;i<tradesAsc.length;i++){
-    const a = new Date(tradesAsc[i-1].datetime).getTime();
-    const b = new Date(tradesAsc[i].datetime).getTime();
-    if(!Number.isFinite(a) || !Number.isFinite(b)) continue;
-    const m = (b-a)/60000;
-    if(m>=0) mins.push(m);
-  }
-  return median(mins);
-}
-function buildCoachInputFromTrades(tradesFiltered, tradesAll){
-  const tf = (tradesFiltered||[]).slice().sort((a,b)=>(a.datetime>b.datetime?1:-1));
-  const ta = (tradesAll||[]).slice().sort((a,b)=>(a.datetime>b.datetime?1:-1));
-
-  const nowIso = tf.length ? tf[tf.length-1].datetime : (ta.length ? ta[ta.length-1].datetime : new Date().toISOString());
-  const now = new Date(nowIso);
-
-  // Period label: use selected range
-  const periodLabel = (state.range || "").toUpperCase();
-  const startIso = rangeCutoffIso(state.range, now) || (ta[0]?.datetime || now.toISOString());
-  const endIso = now.toISOString();
-
-  const tradesCount = tf.length;
-  const medRest = medianMinutesBetweenTrades(tf);
-
-  // Baseline (30d) from ALL trades (respect exchangeFilter + marketType)
-  const cutoff30 = new Date(now.getTime() - 30*24*3600*1000).toISOString();
-  let basePool = ta.filter(t=>t.datetime>=cutoff30);
-  // Respect filters
-  basePool = applyExchangeFilter(basePool);
-  if(state.marketType!=="ALL") basePool = basePool.filter(t=>t.marketType===state.marketType);
-  if(state.exchange!=="ALL") basePool = basePool.filter(t=>t.exchange===state.exchange);
-
-  const byDay = groupTradesByIsoDay(basePool);
-  const dayCounts = Array.from(byDay.values());
-  const baseMedian = median(dayCounts);
-  const baseIqr = iqr(dayCounts);
-
-  const baseRest = medianMinutesBetweenTrades(basePool);
-
-  // Simple sequences (loss streak)
-  const lossStreakMax = (function(){
-    let cur=0, max=0;
-    for(const t of tf){
-      const net = Number(t.netPnlUsd||0);
-      if(net<0){ cur++; max=Math.max(max,cur); } else { cur=0; }
-    }
-    return max;
-  })();
-
-  const input = {
-    period: { label: periodLabel || "RANGE", startISO: startIso, endISO: endIso },
-    behavior: {
-      trades: tradesCount,
-      medianMinutesBetweenTrades: medRest,
-      sizeVsBaselinePct: 0 // later: sizing model
-    },
-    results: {
-      netPnl: tf.reduce((s,t)=>s+(Number(t.netPnlUsd||0)),0),
-      winRate: tradesCount ? (tf.filter(t=>(Number(t.netPnlUsd||0))>0).length / tradesCount) : 0,
-      profitFactor: null,
-      expectancyR: null,
-      maxDrawdownR: null
-    },
-    discipline: {
-      maxTradesRule: { enabled: true, maxTrades: 10 },
-      cooldownAfterLossRule: { enabled: true, minutes: 15 },
-      dailyStopRule: { enabled: true, maxLossR: 3 }
-    },
-    baselines30d: {
-      tradesPerDayMedian: baseMedian,
-      tradesPerDayIQR: baseIqr,
-      medianMinutesBetweenTrades: baseRest,
-      medianHoldingMinutes: null
-    },
-    sequences: {
-      firstLossTimeISO: null,
-      afterLossTrades: null,
-      afterLossSizeVsBaselinePct: 0,
-      lossStreakMax,
-      flipCountSameSymbol: 0
-    },
-    segments: []
-  };
-  return input;
-}
-// ---------- /Coach ----------
 
 function aggregateKPIs(trades){
-  const net=trades.reduce((s,t)=>s+(t.netPnlUsd||0),0);
-  const fees=trades.reduce((s,t)=>s+(t.feesUsd||0),0);
-  const wins=trades.filter(t=>(t.netPnlUsd||0)>0).length;
-  const count=trades.length;
-  const winrate=count?wins/count:0;
+  const net = trades.reduce((s,t)=>s+(t.netPnlUsd||0),0);
+  const fees = trades.reduce((s,t)=>s+(t.feesUsd||0),0);
+
+  const real = trades.filter(isRealTrade);
+  const count = real.length;
+  const wins = real.filter(t=>(t.netPnlUsd||0)>0).length;
+  const winrate = count ? wins/count : 0;
+
   return { net, fees, wins, count, winrate };
 }
+
 function buildEquitySeries(tradesAsc){
   let cum=0; const pts=[];
   for(const t of tradesAsc){ cum += (t.netPnlUsd||0); pts.push({x:t.datetime,y:cum}); }
@@ -1107,13 +1005,13 @@ function setKpi(el, valueText, goodBad=null, subText=null){
 
 async function renderAll(){
   const trades=await getFilteredTrades();
-  // Coach input (lightweight)
-  try{
-    const all = applyExchangeFilter(await db.trades.toArray());
-    state.coachInput = buildCoachInputFromTrades(trades, all);
-  }catch(_){ /* ignore */ }
-
   const k=aggregateKPIs(trades);
+// Update Coach cache (real trades only for count/behavior)
+try{
+  __coachInputCache = buildCoachInputFromTrades(trades);
+  if(window.__coachTeaserCtl && typeof window.__coachTeaserCtl.rerender==="function") window.__coachTeaserCtl.rerender();
+  if(window.__coachTabCtl && typeof window.__coachTabCtl.rerender==="function") window.__coachTabCtl.rerender();
+}catch(_){}
 // Manual base (stortingen - opnames) per exchange filter
 const deposits = loadDeposits();
 const depositBaseUsd = depositsForCurrentExchange(deposits); // number or null
@@ -1482,6 +1380,92 @@ function setActiveTab(tab){
   for(const el of [...els.tabs.querySelectorAll(".tab")]) el.classList.toggle("active", el.dataset.tab===tab);
   for(const [k,v] of Object.entries(els.views)) v.style.display = (k===tab) ? "" : "none";
 }
+
+// ---------- Coach (vanilla) integration ----------
+let __coachInputCache = null;
+let __coachTone = localStorage.getItem("pnl_coach_tone") || "neutral";
+
+function median(arr){
+  if(!arr || arr.length===0) return null;
+  const a = arr.slice().sort((x,y)=>x-y);
+  const mid = Math.floor(a.length/2);
+  return (a.length%2) ? a[mid] : (a[mid-1]+a[mid])/2;
+}
+
+function buildCoachInputFromTrades(trades){
+  const real = (trades||[]).filter(isRealTrade);
+
+  // period label aligns with your range selector (e.g. 1W / 1M / etc.)
+  const periodLabel = String(state.range || "—");
+
+  // median minutes between trades (real trades only)
+  const times = real
+    .map(t => new Date(t.datetime).getTime())
+    .filter(x => Number.isFinite(x))
+    .sort((a,b)=>a-b);
+
+  const diffsMin = [];
+  for(let i=1;i<times.length;i++){
+    diffsMin.push((times[i]-times[i-1]) / 60000);
+  }
+
+  const medBetween = diffsMin.length ? Math.round(median(diffsMin)) : null;
+
+  // loss streak (real trades only)
+  let streak=0, maxStreak=0;
+  for(const t of real){
+    const n = Number(t.netPnlUsd||0);
+    if(n<0){ streak++; maxStreak=Math.max(maxStreak, streak); }
+    else { streak=0; }
+  }
+
+  // after-loss behavior (simple)
+  let firstLossTimeISO = null;
+  let afterLossTrades = 0;
+  if(real.length){
+    const firstLoss = real.find(t => Number(t.netPnlUsd||0) < 0);
+    if(firstLoss){
+      firstLossTimeISO = firstLoss.datetime;
+      const lossTime = new Date(firstLoss.datetime).getTime();
+      afterLossTrades = real.filter(t => new Date(t.datetime).getTime() > lossTime).length;
+    }
+  }
+
+  return {
+    period: { label: periodLabel, startISO: null, endISO: null },
+    behavior: {
+      trades: real.length,
+      medianMinutesBetweenTrades: medBetween,
+      sizeVsBaselinePct: 0
+    },
+    results: {
+      netPnl: Number((trades||[]).reduce((s,t)=>s+(t.netPnlUsd||0),0)),
+      winRate: real.length ? (real.filter(t=>Number(t.netPnlUsd||0)>0).length / real.length) : 0,
+      profitFactor: null,
+      expectancyR: null,
+      maxDrawdownR: null
+    },
+    discipline: {
+      maxTradesRule: { enabled: true, maxTrades: 10 },
+      cooldownAfterLossRule: { enabled: true, minutes: 15 },
+      dailyStopRule: { enabled: false, maxLossR: 3 }
+    },
+    baselines30d: null,
+    sequences: {
+      firstLossTimeISO,
+      afterLossTrades,
+      afterLossSizeVsBaselinePct: 0,
+      lossStreakMax: maxStreak,
+      flipCountSameSymbol: 0
+    },
+    segments: []
+  };
+}
+
+function getCoachInput(){
+  return __coachInputCache || buildCoachInputFromTrades([]);
+}
+// ---------- /Coach ----------
 els.tabs.addEventListener("click",(e)=>{
   const t=e.target.closest(".tab"); if(!t) return;
   setActiveTab(t.dataset.tab);
@@ -2038,6 +2022,30 @@ try{
 
   wireCalculator();
 
+// Coach mounts (safe: only if coach.js loaded + mount points exist)
+try{
+  if(window.Coach){
+    const teaserEl = document.getElementById("coach-teaser");
+    if(teaserEl && !window.__coachTeaserCtl){
+      window.__coachTeaserCtl = Coach.mountTeaser({
+        mountId: "coach-teaser",
+        getInput: getCoachInput,
+        getTone: () => __coachTone,
+        onOpenCoach: () => { try{ setActiveTab("coach"); }catch(_){} }
+      });
+    }
+    const tabEl = document.getElementById("tab-coach");
+    if(tabEl && !window.__coachTabCtl){
+      window.__coachTabCtl = Coach.mountTab({
+        mountId: "tab-coach",
+        getInput: getCoachInput,
+        defaultTone: __coachTone,
+        onToneChange: (t) => { __coachTone=t; try{ localStorage.setItem("pnl_coach_tone", t); }catch(_){} }
+      });
+    }
+  }
+}catch(_){}
+
   // Sticky header collapse (mobile friendly)
   try {
     const collapsed = localStorage.getItem("pnl_header_collapsed") === "1";
@@ -2057,43 +2065,9 @@ try{
 
   // first sync + render
   await syncFromApiIntoDb();
-await renderAll();
+  await renderAll();
 
-// --- Coach mounts (guarded) ---
-try{
-  if (window.Coach){
-    // Teaser (Dashboard)
-    window.Coach.mountTeaser({
-      mountId: "coach-teaser",
-      getInput: () => state.coachInput || {
-        period: { label:"—", startISO:new Date().toISOString(), endISO:new Date().toISOString() },
-        behavior: { trades: 0, medianMinutesBetweenTrades: null, sizeVsBaselinePct: 0 },
-        discipline: { maxTradesRule:{enabled:true,maxTrades:10}, cooldownAfterLossRule:{enabled:true,minutes:15}, dailyStopRule:{enabled:true,maxLossR:3} },
-        baselines30d: { tradesPerDayMedian: null, tradesPerDayIQR: null, medianMinutesBetweenTrades: null, medianHoldingMinutes: null },
-        sequences: { lossStreakMax: 0, flipCountSameSymbol: 0 }
-      },
-      getTone: () => state.coachTone || "neutral",
-      onOpenCoach: () => setActiveTab("coach")
-    });
-
-    // Coach tab
-    window.Coach.mountTab({
-      mountId: "tab-coach",
-      getInput: () => state.coachInput || {
-        period: { label:"—", startISO:new Date().toISOString(), endISO:new Date().toISOString() },
-        behavior: { trades: 0, medianMinutesBetweenTrades: null, sizeVsBaselinePct: 0 },
-        discipline: { maxTradesRule:{enabled:true,maxTrades:10}, cooldownAfterLossRule:{enabled:true,minutes:15}, dailyStopRule:{enabled:true,maxLossR:3} },
-        baselines30d: { tradesPerDayMedian: null, tradesPerDayIQR: null, medianMinutesBetweenTrades: null, medianHoldingMinutes: null },
-        sequences: { lossStreakMax: 0, flipCountSameSymbol: 0 }
-      },
-      defaultTone: state.coachTone || "neutral",
-      onToneChange: (t) => { state.coachTone = t; }
-    });
-  }
-}catch(e){ console.warn("Coach mount failed", e); }
-
-// auto refresh
-
+  // auto refresh
   setInterval(async()=>{
     await syncFromApiIntoDb();
     await renderAll();

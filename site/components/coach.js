@@ -60,9 +60,26 @@
   color:#e5e7eb;
 }
       .coach-empty{font-size:14px;opacity:.7}
-      .coach-tone{display:inline-flex;border:1px solid rgba(0,0,0,.12);border-radius:999px;overflow:hidden;background:rgba(255,255,255,.8)}
-      .coach-tone button{padding:8px 10px;font-size:12px;cursor:pointer;border:none;background:transparent}
-      .coach-tone button.active{background:rgba(0,0,0,.06)}
+      .coach-tone{
+  display:inline-flex;
+  border:1px solid rgba(255,255,255,0.14);
+  border-radius:999px;
+  overflow:hidden;
+  background:rgba(255,255,255,0.06);
+}
+.coach-tone button{
+  padding:8px 10px;
+  font-size:12px;
+  cursor:pointer;
+  border:none;
+  background:transparent;
+  color:#e5e7eb;
+  opacity:.8;
+}
+.coach-tone button.active{
+  background:rgba(255,255,255,0.10);
+  opacity:1;
+}
       .coach-teaser{
   background:linear-gradient(
     180deg,
@@ -75,7 +92,15 @@
       .coach-teaser[role="button"]{cursor:pointer}
       .coach-teaser-title{font-size:12px;opacity:.7}
       .coach-teaser-summary{font-size:13px;line-height:1.25}
-      .coach-pill{font-size:12px;padding:6px 10px;border-radius:999px;border:1px solid rgba(0,0,0,.12);background:rgba(255,255,255,.9);white-space:nowrap}
+      .coach-pill{
+  font-size:12px;
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,0.14);
+  background:rgba(255,255,255,0.08);
+  color:#e5e7eb;
+  white-space:nowrap;
+}
       .coach-debug{font-size:13px;opacity:.75;margin-bottom:8px}
     `;
     const tag = document.createElement("style");
