@@ -212,6 +212,7 @@
 <div class="tabs" id="tabs">
 <div class="tab active" data-tab="dash">Dashboard</div>
 <div class="tab" data-tab="analyse">Analyse</div>
+<div class="tab" data-tab="coach">Coach</div>
 <div class="tab" data-tab="trades">Trades</div>
 <div class="tab" data-tab="calc">Calculator</div>
 <div class="tab" data-tab="import">Import</div>
@@ -272,6 +273,7 @@
 </div>
 <!-- Dashboard -->
 <section class="grid" id="view-dash">
+<div class="card" id="coachTeaserCard"><div id="coach-teaser"></div></div>
 <div class="card"><div class="kpi" id="kpiTotal"><div class="label">Totale waarde</div><div class="value">—</div><div class="sub">(Stortingen - opnames) + Net PnL</div></div></div><div class="card">
 <div class="kpi" id="kpiNet">
 <div class="label">Net PnL</div>
@@ -375,6 +377,17 @@
 </div>
 </div>
 </section>
+<!-- Coach -->
+<section class="grid" id="view-coach" style="display:none">
+  <div class="card">
+    <div style="font-weight:800;font-size:16px">Coach</div>
+    <div class="muted small" style="margin-top:4px">Gedragsfeedback en inzichten op basis van je trades (rust • discipline • patronen).</div>
+  </div>
+  <div class="card" style="padding:0">
+    <div id="tab-coach"></div>
+  </div>
+</section>
+
 <!-- Trades -->
 <section class="grid" id="view-trades" style="display:none">
 <div class="card">
@@ -545,6 +558,7 @@
 </main>
 <!-- Dexie (IndexedDB) -->
 <script src="https://unpkg.com/dexie@4/dist/dexie.min.js"></script>
+<script src="components/coach.js"></script>
 <script src="app.js"></script>
 <script>
     if ('serviceWorker' in navigator) {
