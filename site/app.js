@@ -363,7 +363,7 @@ function parseCsv(text){
 function rowsToObjects(rows){
   const headers = rows[0].map((h,i)=>{ let t=(h??"").toString().trim(); if(i===0) t=t.replace(/^﻿/,""); return t; });
   const objs=[];
-  for(let r=1;r<rows.length;r++){
+  for(let r=1;r<countRealTrades(rows);r++){
     const arr=rows[r];
     if(arr.length===1 && arr[0].trim()==="") continue;
     const obj={};
@@ -595,35 +595,14 @@ async function getTradesForTotalKpi(){
   return items;
 }
 
-function isRealTrade(t){
-  // Exclude fee/funding-only rows while keeping net/fees math intact elsewhere.
-  // Heuristics: real trade usually has side buy/sell AND qty>0 AND price>0.
-  const side = String(t.side||"").toLowerCase();
-  const hasSide = (side==="buy" || side==="sell");
-  const qty = Number(t.qty||0);
-  const price = Number(t.price||0);
-
-  // Many non-trade rows have qty/price 0 and empty side.
-  if(hasSide && qty>0 && price>0) return true;
-
-  // Fallback: some exchanges may omit side but still have qty+price.
-  if(qty>0 && price>0) return true;
-
-  return false;
-}
-
 function aggregateKPIs(trades){
-  const net = trades.reduce((s,t)=>s+(t.netPnlUsd||0),0);
-  const fees = trades.reduce((s,t)=>s+(t.feesUsd||0),0);
-
-  const real = trades.filter(isRealTrade);
-  const count = real.length;
-  const wins = real.filter(t=>(t.netPnlUsd||0)>0).length;
-  const winrate = count ? wins/count : 0;
-
+  const net=trades.reduce((s,t)=>s+(t.netPnlUsd||0),0);
+  const fees=trades.reduce((s,t)=>s+(t.feesUsd||0),0);
+  const wins=trades.filter(t=>(t.netPnlUsd||0)>0).length;
+  const count=trades.length;
+  const winrate=count?wins/count:0;
   return { net, fees, wins, count, winrate };
 }
-
 function buildEquitySeries(tradesAsc){
   let cum=0; const pts=[];
   for(const t of tradesAsc){ cum += (t.netPnlUsd||0); pts.push({x:t.datetime,y:cum}); }
@@ -1006,12 +985,6 @@ function setKpi(el, valueText, goodBad=null, subText=null){
 async function renderAll(){
   const trades=await getFilteredTrades();
   const k=aggregateKPIs(trades);
-// Update Coach cache (real trades only for count/behavior)
-try{
-  __coachInputCache = buildCoachInputFromTrades(trades);
-  if(window.__coachTeaserCtl && typeof window.__coachTeaserCtl.rerender==="function") window.__coachTeaserCtl.rerender();
-  if(window.__coachTabCtl && typeof window.__coachTabCtl.rerender==="function") window.__coachTabCtl.rerender();
-}catch(_){}
 // Manual base (stortingen - opnames) per exchange filter
 const deposits = loadDeposits();
 const depositBaseUsd = depositsForCurrentExchange(deposits); // number or null
@@ -1380,92 +1353,6 @@ function setActiveTab(tab){
   for(const el of [...els.tabs.querySelectorAll(".tab")]) el.classList.toggle("active", el.dataset.tab===tab);
   for(const [k,v] of Object.entries(els.views)) v.style.display = (k===tab) ? "" : "none";
 }
-
-// ---------- Coach (vanilla) integration ----------
-let __coachInputCache = null;
-let __coachTone = localStorage.getItem("pnl_coach_tone") || "neutral";
-
-function median(arr){
-  if(!arr || arr.length===0) return null;
-  const a = arr.slice().sort((x,y)=>x-y);
-  const mid = Math.floor(a.length/2);
-  return (a.length%2) ? a[mid] : (a[mid-1]+a[mid])/2;
-}
-
-function buildCoachInputFromTrades(trades){
-  const real = (trades||[]).filter(isRealTrade);
-
-  // period label aligns with your range selector (e.g. 1W / 1M / etc.)
-  const periodLabel = String(state.range || "—");
-
-  // median minutes between trades (real trades only)
-  const times = real
-    .map(t => new Date(t.datetime).getTime())
-    .filter(x => Number.isFinite(x))
-    .sort((a,b)=>a-b);
-
-  const diffsMin = [];
-  for(let i=1;i<times.length;i++){
-    diffsMin.push((times[i]-times[i-1]) / 60000);
-  }
-
-  const medBetween = diffsMin.length ? Math.round(median(diffsMin)) : null;
-
-  // loss streak (real trades only)
-  let streak=0, maxStreak=0;
-  for(const t of real){
-    const n = Number(t.netPnlUsd||0);
-    if(n<0){ streak++; maxStreak=Math.max(maxStreak, streak); }
-    else { streak=0; }
-  }
-
-  // after-loss behavior (simple)
-  let firstLossTimeISO = null;
-  let afterLossTrades = 0;
-  if(real.length){
-    const firstLoss = real.find(t => Number(t.netPnlUsd||0) < 0);
-    if(firstLoss){
-      firstLossTimeISO = firstLoss.datetime;
-      const lossTime = new Date(firstLoss.datetime).getTime();
-      afterLossTrades = real.filter(t => new Date(t.datetime).getTime() > lossTime).length;
-    }
-  }
-
-  return {
-    period: { label: periodLabel, startISO: null, endISO: null },
-    behavior: {
-      trades: real.length,
-      medianMinutesBetweenTrades: medBetween,
-      sizeVsBaselinePct: 0
-    },
-    results: {
-      netPnl: Number((trades||[]).reduce((s,t)=>s+(t.netPnlUsd||0),0)),
-      winRate: real.length ? (real.filter(t=>Number(t.netPnlUsd||0)>0).length / real.length) : 0,
-      profitFactor: null,
-      expectancyR: null,
-      maxDrawdownR: null
-    },
-    discipline: {
-      maxTradesRule: { enabled: true, maxTrades: 10 },
-      cooldownAfterLossRule: { enabled: true, minutes: 15 },
-      dailyStopRule: { enabled: false, maxLossR: 3 }
-    },
-    baselines30d: null,
-    sequences: {
-      firstLossTimeISO,
-      afterLossTrades,
-      afterLossSizeVsBaselinePct: 0,
-      lossStreakMax: maxStreak,
-      flipCountSameSymbol: 0
-    },
-    segments: []
-  };
-}
-
-function getCoachInput(){
-  return __coachInputCache || buildCoachInputFromTrades([]);
-}
-// ---------- /Coach ----------
 els.tabs.addEventListener("click",(e)=>{
   const t=e.target.closest(".tab"); if(!t) return;
   setActiveTab(t.dataset.tab);
@@ -2021,30 +1908,6 @@ try{
   setChartMode(state.chartMode || "pnl");
 
   wireCalculator();
-
-// Coach mounts (safe: only if coach.js loaded + mount points exist)
-try{
-  if(window.Coach){
-    const teaserEl = document.getElementById("coach-teaser");
-    if(teaserEl && !window.__coachTeaserCtl){
-      window.__coachTeaserCtl = Coach.mountTeaser({
-        mountId: "coach-teaser",
-        getInput: getCoachInput,
-        getTone: () => __coachTone,
-        onOpenCoach: () => { try{ setActiveTab("coach"); }catch(_){} }
-      });
-    }
-    const tabEl = document.getElementById("tab-coach");
-    if(tabEl && !window.__coachTabCtl){
-      window.__coachTabCtl = Coach.mountTab({
-        mountId: "tab-coach",
-        getInput: getCoachInput,
-        defaultTone: __coachTone,
-        onToneChange: (t) => { __coachTone=t; try{ localStorage.setItem("pnl_coach_tone", t); }catch(_){} }
-      });
-    }
-  }
-}catch(_){}
 
   // Sticky header collapse (mobile friendly)
   try {
