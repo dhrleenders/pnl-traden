@@ -102,6 +102,16 @@ const els = {
   analyseWinrate: document.getElementById("analyseWinrate"),
   analyseTrades: document.getElementById("analyseTrades"),
 
+
+  coachBadge: document.getElementById("coachBadge"),
+  coachStreak: document.getElementById("coachStreak"),
+  coachDrawdown: document.getElementById("coachDrawdown"),
+  coachBestDay: document.getElementById("coachBestDay"),
+  coachWorstDay: document.getElementById("coachWorstDay"),
+  coachBestSession: document.getElementById("coachBestSession"),
+  coachWorstHour: document.getElementById("coachWorstHour"),
+  coachHint: document.getElementById("coachHint"),
+
   calMonth: document.getElementById("calMonth"),
   calViewDay: document.getElementById("calViewDay"),
   calViewWeek: document.getElementById("calViewWeek"),
@@ -312,6 +322,200 @@ function isRealTradeRow(t){
   const price = Number(t.price || 0);
   return (isFinite(qty) && qty !== 0) || (isFinite(price) && price !== 0);
 }
+
+// ---------- Trading Coach (Prio 1) ----------
+function localDateKey(iso){
+  const d = new Date(iso);
+  if (isNaN(d)) return null;
+  // en-CA gives YYYY-MM-DD in local timezone
+  return d.toLocaleDateString('en-CA');
+}
+function localHour(iso){
+  const d = new Date(iso);
+  return isNaN(d) ? null : d.getHours();
+}
+function weekdayLabel(idx){
+  return ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][idx] || "";
+}
+function sessionLabelByHour(h){
+  if (h===null || h===undefined) return "Unknown";
+  // Local time sessions (Amsterdam on your phone)
+  if (h >= 0 && h < 8) return "Asia (00-08)";
+  if (h >= 8 && h < 14) return "London (08-14)";
+  if (h >= 14 && h < 22) return "NY (14-22)";
+  return "Late (22-24)";
+}
+function sumNetUsd(rows){
+  return rows.reduce((s,t)=>s + (Number(t.netPnlUsd)||0), 0);
+}
+function dailyNetMap(rows){
+  const map = new Map(); // dateKey -> {netUsd,count}
+  for(const t of rows){
+    if(!t.datetime) continue;
+    const k = localDateKey(t.datetime);
+    if(!k) continue;
+    const cur = map.get(k) || { netUsd:0, count:0 };
+    cur.netUsd += (Number(t.netPnlUsd)||0);
+    cur.count += 1;
+    map.set(k, cur);
+  }
+  return map;
+}
+function computeStreak(dailyMap){
+  const days = Array.from(dailyMap.entries())
+    .map(([k,v])=>({date:k, netUsd:v.netUsd}))
+    .filter(x=>isFinite(x.netUsd))
+    .sort((a,b)=> a.date.localeCompare(b.date));
+  if(!days.length) return { label:"—", kind:null, count:0 };
+  // last trading day
+  let i = days.length - 1;
+  while(i>=0 && Math.abs(days[i].netUsd) < 1e-9) i--; // ignore breakeven at the very end
+  if(i<0) return { label:"Break-even", kind:"be", count:days.length };
+  const sign = days[i].netUsd > 0 ? 1 : -1;
+  let count = 0;
+  for(let j=i;j>=0;j--){
+    const v = days[j].netUsd;
+    if(Math.abs(v) < 1e-9) break; // stop at breakeven
+    if((v>0?1:-1) !== sign) break;
+    count++;
+  }
+  const kind = sign>0 ? "win" : "loss";
+  const label = sign>0 ? `Win streak: ${count}` : `Loss streak: ${count}`;
+  return { label, kind, count, lastDay: days[i].date, lastNetUsd: days[i].netUsd };
+}
+function computeMaxDrawdown(rows){
+  // Based on equity curve of netPnlUsd over time (real trades)
+  const asc = [...rows].filter(t=>t.datetime).sort((a,b)=> (a.datetime > b.datetime ? 1 : -1));
+  let equity = 0;
+  let peak = 0;
+  let maxDD = 0;
+  let peakAt = null;
+  let troughAt = null;
+  let curPeakAt = null;
+
+  for(const t of asc){
+    equity += (Number(t.netPnlUsd)||0);
+    if(equity > peak){
+      peak = equity;
+      curPeakAt = t.datetime;
+    }
+    const dd = peak - equity;
+    if(dd > maxDD){
+      maxDD = dd;
+      peakAt = curPeakAt;
+      troughAt = t.datetime;
+    }
+  }
+  return { maxDDUsd: maxDD, peakAt, troughAt };
+}
+function computeWeekdayStats(dailyMap){
+  const agg = Array.from({length:7}, ()=>({sumUsd:0, days:0}));
+  for(const [date,v] of dailyMap.entries()){
+    const d = new Date(date+"T00:00:00");
+    const w = isNaN(d) ? null : d.getDay(); // 0 Sun..6 Sat
+    if(w===null) continue;
+    agg[w].sumUsd += v.netUsd;
+    agg[w].days += 1;
+  }
+  const stats = agg.map((a,i)=>({
+    idx:i,
+    label:weekdayLabel(i),
+    avgUsd: a.days ? a.sumUsd/a.days : 0,
+    days: a.days
+  })).filter(x=>x.days>0);
+  if(!stats.length) return { best:null, worst:null };
+  const best = [...stats].sort((a,b)=>b.avgUsd-a.avgUsd)[0];
+  const worst = [...stats].sort((a,b)=>a.avgUsd-b.avgUsd)[0];
+  return { best, worst };
+}
+function computeSessionStats(rows){
+  const map = new Map(); // session -> sumUsd
+  for(const t of rows){
+    const h = localHour(t.datetime);
+    const s = sessionLabelByHour(h);
+    map.set(s, (map.get(s)||0) + (Number(t.netPnlUsd)||0));
+  }
+  const arr = Array.from(map.entries()).map(([k,v])=>({session:k, sumUsd:v}));
+  if(!arr.length) return { best:null };
+  const best = [...arr].sort((a,b)=>b.sumUsd-a.sumUsd)[0];
+  return { best, all: arr };
+}
+function computeWorstHour(rows){
+  const agg = Array.from({length:24}, ()=>({sumUsd:0, n:0}));
+  for(const t of rows){
+    const h = localHour(t.datetime);
+    if(h===null || h<0 || h>23) continue;
+    agg[h].sumUsd += (Number(t.netPnlUsd)||0);
+    agg[h].n += 1;
+  }
+  const arr = agg.map((a,h)=>({hour:h, avgUsd: a.n ? a.sumUsd/a.n : null, n:a.n})).filter(x=>x.n>0);
+  if(!arr.length) return null;
+  return [...arr].sort((a,b)=>a.avgUsd-b.avgUsd)[0];
+}
+function renderCoach(rowsFiltered, depositBaseUsd){
+  try{
+    const real = rowsFiltered.filter(isRealTradeRow);
+    if(!els.coachBadge) return;
+    els.coachBadge.textContent = `${real.length} real trades`;
+
+    if(real.length===0){
+      if(els.coachStreak) setKpi(els.coachStreak, "—", null, "Geen trades in filter");
+      if(els.coachDrawdown) setKpi(els.coachDrawdown, "—", null, "");
+      if(els.coachBestDay) setKpi(els.coachBestDay, "—", null, "");
+      if(els.coachWorstDay) setKpi(els.coachWorstDay, "—", null, "");
+      if(els.coachBestSession) setKpi(els.coachBestSession, "—", null, "");
+      if(els.coachWorstHour) setKpi(els.coachWorstHour, "—", null, "");
+      if(els.coachHint) els.coachHint.textContent = "";
+      return;
+    }
+
+    const dailyMap = dailyNetMap(real);
+    const streak = computeStreak(dailyMap);
+
+    if(els.coachStreak){
+      const kind = streak.kind==="win" ? "good" : (streak.kind==="loss" ? "bad" : null);
+      setKpi(els.coachStreak, streak.label, kind, streak.lastDay ? `${streak.lastDay} • ${formatMoney(convertUsdToSelected(streak.lastNetUsd||0), convertedLabel())}` : "");
+    }
+
+    const dd = computeMaxDrawdown(real);
+    if(els.coachDrawdown){
+      const ddC = convertUsdToSelected(dd.maxDDUsd||0);
+      let sub = "";
+      if(depositBaseUsd && depositBaseUsd>0){
+        const pct = (dd.maxDDUsd||0) / depositBaseUsd;
+        sub = `≈ ${(pct*100).toFixed(1)}% van stortingen`;
+      }
+      setKpi(els.coachDrawdown, formatMoney(ddC, convertedLabel()), ddC>0 ? "bad" : null, sub);
+    }
+
+    const wd = computeWeekdayStats(dailyMap);
+    if(els.coachBestDay && wd.best){
+      setKpi(els.coachBestDay, wd.best.label, wd.best.avgUsd>=0 ? "good":"bad", `${formatMoney(convertUsdToSelected(wd.best.avgUsd), convertedLabel())} avg (${wd.best.days}d)`);
+    }
+    if(els.coachWorstDay && wd.worst){
+      setKpi(els.coachWorstDay, wd.worst.label, wd.worst.avgUsd>=0 ? "good":"bad", `${formatMoney(convertUsdToSelected(wd.worst.avgUsd), convertedLabel())} avg (${wd.worst.days}d)`);
+    }
+
+    const sess = computeSessionStats(real);
+    if(els.coachBestSession && sess.best){
+      setKpi(els.coachBestSession, sess.best.session, sess.best.sumUsd>=0 ? "good":"bad", formatMoney(convertUsdToSelected(sess.best.sumUsd), convertedLabel()));
+    }
+
+    const worstHr = computeWorstHour(real);
+    if(els.coachWorstHour && worstHr){
+      setKpi(els.coachWorstHour, `${String(worstHr.hour).padStart(2,'0')}:00`, worstHr.avgUsd>=0 ? "good":"bad",
+        `${formatMoney(convertUsdToSelected(worstHr.avgUsd), convertedLabel())} avg (${worstHr.n} trades)`);
+    }
+
+    if(els.coachHint){
+      const tradingDays = Array.from(dailyMap.keys()).length;
+      els.coachHint.textContent = `Trading days in filter: ${tradingDays}. Sessions & hours zijn op lokale tijd (telefoon).`;
+    }
+  }catch(e){
+    // keep UI stable
+  }
+}
+
 
 function rangeLabelNL(kind, startIso, endIso){
   // endIso is exclusive
@@ -1079,6 +1283,9 @@ if (els.dashChartSub) {
       els.analyseAvg.textContent = formatMoney(avg, convertedLabel());
     }
     if (els.analyseRangeBadge) els.analyseRangeBadge.textContent = `${state.exchangeFilter} • ${state.marketType}`;
+
+    // Trading coach (prio 1)
+    try { const depsNow = await loadDeposits(); const baseUsdCoach = depositsForCurrentExchange(depsNow) || 0; renderCoach(analyseBase, baseUsdCoach); } catch(e) {}
 
     // Analyse charts
     const ptsAUsd = buildEquitySeries(analyseBase);

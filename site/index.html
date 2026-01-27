@@ -66,6 +66,12 @@
     select, option { color: #000 !important; }
     select { background: #e5e7eb !important; }
 
+    /* coach mini KPIs */
+    .kpi.mini{min-width:150px}
+    .kpi.mini .value{font-size:18px}
+    .kpi.mini .sub{max-width:180px}
+
+
 
     /* Calculator */
     .form{margin-top:10px;display:flex;flex-direction:column;gap:10px}
@@ -311,7 +317,31 @@
 </div>
 <div class="card third"><div class="kpi" id="kpiToday"><div class="label">Today</div><div class="value">—</div><div class="sub">Net PnL</div></div></div>
 <div class="card third"><div class="kpi" id="kpi7d"><div class="label">7 dagen</div><div class="value">—</div><div class="sub">Net PnL</div></div></div>
-<div class="card third"><div class="kpi" id="kpi30d"><div class="label">30 dagen</div><div class="value">—</div><div class="sub">Net PnL</div></div></div>
+<div class="card third"><div class="kpi" id="kpi30d"><div class="label">30 dagen</div><div class="value">—</div><div class="sub">Net PnL</div></div>
+<div class="card two" id="coachCard">
+  <div class="row" style="justify-content:space-between;align-items:flex-end">
+    <div>
+      <div style="font-weight:800;font-size:16px">Trading coach</div>
+      <div class="muted small">Gebaseerd op echte trades (geen fees/funding). Respecteert je filters (exchange/markettype/range).</div>
+    </div>
+    <div class="badge" id="coachBadge">—</div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:repeat(12,1fr);gap:12px;margin-top:10px">
+    <div class="card" style="grid-column:span 12;padding:12px">
+      <div class="row" style="justify-content:space-between;gap:12px">
+        <div class="kpi mini" id="coachStreak"><div class="label">Streak</div><div class="value">—</div><div class="sub">Laatste trading days</div></div>
+        <div class="kpi mini" id="coachDrawdown"><div class="label">Max drawdown</div><div class="value">—</div><div class="sub">Peak → trough</div></div>
+        <div class="kpi mini" id="coachBestDay"><div class="label">Beste dag</div><div class="value">—</div><div class="sub">Gem. per trading day</div></div>
+        <div class="kpi mini" id="coachWorstDay"><div class="label">Slechtste dag</div><div class="value">—</div><div class="sub">Gem. per trading day</div></div>
+        <div class="kpi mini" id="coachBestSession"><div class="label">Beste sessie</div><div class="value">—</div><div class="sub">Net PnL</div></div>
+        <div class="kpi mini" id="coachWorstHour"><div class="label">Slechtste uur</div><div class="value">—</div><div class="sub">Gem. per trade</div></div>
+      </div>
+      <div class="hint" id="coachHint" style="margin-top:8px"></div>
+    </div>
+  </div>
+</div>
+</div>
 <div class="card two">
 <div style="font-weight:700;margin-bottom:6px">Cumulatief (Analyse)</div>
 <canvas height="300" id="analyseEquityCanvas" width="1000"></canvas>
