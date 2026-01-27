@@ -383,6 +383,16 @@
     <div style="font-weight:800;font-size:16px">Coach</div>
     <div class="muted small" style="margin-top:4px">Gedragsfeedback en inzichten op basis van je trades (rust • discipline • patronen).</div>
   </div>
+<div class="card">
+  <div class="row" style="justify-content:space-between;gap:10px;align-items:center">
+    <div class="row" style="gap:10px;align-items:center">
+      <button class="btn" id="coachSyncBtn" type="button">Update coach (Kraken)</button>
+      <span class="muted small" id="coachSyncStatus">—</span>
+    </div>
+    <div class="muted small" id="coachTradeCount">—</div>
+  </div>
+</div>
+
   <div class="card" style="padding:0">
     <div id="tab-coach"></div>
   </div>
@@ -559,6 +569,7 @@
 <!-- Dexie (IndexedDB) -->
 <script src="https://unpkg.com/dexie@4/dist/dexie.min.js"></script>
 <script src="components/coach.js"></script>
+<script src="components/coach_feed.js"></script>
 <script src="app.js"></script>
 <script>
     if ('serviceWorker' in navigator) {

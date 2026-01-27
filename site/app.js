@@ -13,9 +13,10 @@ const FX_CACHE_KEY = "pnl_fx_cache_v1";
 const DEPOSITS_KEY = "pnl_manual_deposits_v1"; // {KRAKEN:number, BLOFIN:number}
 
 const db = new Dexie("pnl_traden_db");
-db.version(2).stores({
-  // Use tradeKey as primary key to avoid duplicates across refreshes.
+db.version(3).stores({
+// Use tradeKey as primary key to avoid duplicates across refreshes.
   trades: "tradeKey, datetime, exchange, symbol, marketType, side, netPnlUsd"
+  ,coachfills: "id, ts, symbol, side"
 });
 
 // ---------------- Deposits (manual base) ----------------
@@ -595,6 +596,238 @@ async function getTradesForTotalKpi(){
   return items;
 }
 
+
+// ---------- Coach Feed (Kraken Futures fills via /api/coach-feed) ----------
+async function syncCoachFromKraken({ maxPages = 5 } = {}){
+  if(!window.CoachFeed || !window.CoachFeed.fetchCoachFeed) throw new Error("CoachFeed not loaded");
+  let cursor = "";
+  let total = 0;
+  for(let page=0; page<maxPages; page++){
+    const res = await window.CoachFeed.fetchCoachFeed({ lastFillTime: cursor || "" });
+    const events = (res && res.events) || [];
+    if(events.length){
+      // Ensure monotonic ts
+      const toPut = events.map(e=>({
+        id: e.id,
+        ts: e.ts,
+        timeISO: e.timeISO,
+        symbol: e.symbol,
+        side: e.side,
+        price: e.price,
+        qty: e.qty,
+        fee: e.fee,
+        orderId: e.orderId,
+        exchange: e.exchange || "kraken_futures"
+      }));
+      await db.coachfills.bulkPut(toPut);
+      total += toPut.length;
+    }
+    cursor = (res && res.cursor) ? res.cursor : "";
+    if(!cursor || events.length < 5) break; // nothing more / reached end
+  }
+  return { total, cursor };
+}
+
+function _median(arr){
+  if(!arr || arr.length===0) return null;
+  const a = [...arr].sort((x,y)=>x-y);
+  const mid = Math.floor(a.length/2);
+  return a.length%2 ? a[mid] : (a[mid-1]+a[mid])/2;
+}
+function _iqr(arr){
+  if(!arr || arr.length<4) return null;
+  const a = [...arr].sort((x,y)=>x-y);
+  const q1 = a[Math.floor((a.length-1)*0.25)];
+  const q3 = a[Math.floor((a.length-1)*0.75)];
+  return q3 - q1;
+}
+
+async function getFilteredCoachFills(){
+  let items = await db.coachfills.toArray();
+  // keep it aligned with trade filtering: use latest timestamp as "nowRef"
+  const nowRef = items.length ? new Date(items.reduce((m,t)=>(t.ts>m?t.ts:m), items[0].ts)) : new Date();
+  const cutoffIso = rangeCutoffIso(state.range, nowRef);
+  const cutoffTs = cutoffIso ? Date.parse(cutoffIso) : null;
+  if(cutoffTs) items = items.filter(x => (x.ts||0) >= cutoffTs);
+  // exchange filter (optional): coach feed is kraken futures only
+  return items.sort((a,b)=>(a.ts||0)-(b.ts||0));
+}
+
+async function getCoachBaseline30d(){
+  const items = await db.coachfills.toArray();
+  const nowRef = items.length ? new Date(items.reduce((m,t)=>(t.ts>m?t.ts:m), items[0].ts)) : new Date();
+  const cutoffTs = nowRef.getTime() - 30*24*60*60*1000;
+  const base = items.filter(x => (x.ts||0) >= cutoffTs).sort((a,b)=>(a.ts||0)-(b.ts||0));
+  return base;
+}
+
+function buildBehaviorFromFills(sortedFills){
+  const trades = sortedFills.length;
+  const ts = sortedFills.map(x=>x.ts).filter(Boolean).sort((a,b)=>a-b);
+  const gapsMin = [];
+  for(let i=1;i<ts.length;i++){
+    gapsMin.push((ts[i]-ts[i-1])/(60*1000));
+  }
+  const medianMinutesBetweenTrades = _median(gapsMin);
+  const longestGapMinutes = gapsMin.length ? Math.max(...gapsMin) : null;
+
+  // Session duration (first->last)
+  const sessionMinutes = ts.length>=2 ? (ts[ts.length-1]-ts[0])/(60*1000) : 0;
+
+  // Burstiness: % trades within <= 2 min gap
+  const burstPct = gapsMin.length ? Math.round(100 * (gapsMin.filter(g=>g<=2).length / gapsMin.length)) : 0;
+
+  return {
+    trades,
+    medianMinutesBetweenTrades,
+    longestGapMinutes,
+    sessionMinutes,
+    burstPct
+  };
+}
+
+function buildBaseline30d(baseFills){
+  // trades per day distribution
+  const byDay = {};
+  baseFills.forEach(f=>{
+    if(!f.ts) return;
+    const d = new Date(f.ts);
+    const key = d.toISOString().slice(0,10);
+    byDay[key] = (byDay[key]||0)+1;
+  });
+  const perDay = Object.values(byDay);
+  const tradesPerDayMedian = perDay.length ? _median(perDay) : null;
+  const tradesPerDayIQR = perDay.length ? _iqr(perDay) : null;
+
+  const behavior = buildBehaviorFromFills(baseFills.sort((a,b)=>(a.ts||0)-(b.ts||0)));
+  return {
+    tradesPerDayMedian,
+    tradesPerDayIQR,
+    medianMinutesBetweenTrades: behavior.medianMinutesBetweenTrades
+  };
+}
+
+function clamp(n, lo, hi){ return Math.max(lo, Math.min(hi, n)); }
+
+function computeDisciplineScore(behavior, base){
+  // Simple + robust scoring (0..100), based on tempo & overtrading
+  let score = 70;
+
+  // Too fast between trades
+  if(behavior.medianMinutesBetweenTrades != null){
+    if(behavior.medianMinutesBetweenTrades < 3) score -= 18;
+    else if(behavior.medianMinutesBetweenTrades < 6) score -= 10;
+    else if(behavior.medianMinutesBetweenTrades > 45) score += 4; // slow is often fine
+  }
+
+  // Bursty trading
+  if(behavior.burstPct >= 60) score -= 10;
+  else if(behavior.burstPct >= 40) score -= 6;
+
+  // Long session without breaks
+  if(behavior.sessionMinutes >= 240) score -= 8;
+  else if(behavior.sessionMinutes >= 120) score -= 4;
+
+  // Overtrading vs baseline
+  if(base && base.tradesPerDayMedian != null && base.tradesPerDayIQR != null){
+    const hard = base.tradesPerDayMedian + 2.5*base.tradesPerDayIQR;
+    const warn = base.tradesPerDayMedian + 1.5*base.tradesPerDayIQR;
+    if(behavior.trades > hard) score -= 16;
+    else if(behavior.trades > warn) score -= 10;
+  } else {
+    if(behavior.trades >= 20) score -= 10;
+  }
+
+  return clamp(Math.round(score), 0, 100);
+}
+
+function getCoachTone(){
+  return localStorage.getItem("coach_tone") || "neutral";
+}
+function setCoachTone(t){
+  localStorage.setItem("coach_tone", t);
+}
+
+let _coachMounted = false;
+async function getCoachInput(){
+  const fills = await getFilteredCoachFills();
+  const baseFills = await getCoachBaseline30d();
+  const behavior = buildBehaviorFromFills(fills);
+  const baselines30d = buildBaseline30d(baseFills);
+  const disciplineScore = computeDisciplineScore(behavior, baselines30d);
+
+  return {
+    period: { label: state.range || "periode", fromISO: fills.length? new Date(fills[0].ts).toISOString() : null, toISO: fills.length? new Date(fills[fills.length-1].ts).toISOString(): null },
+    behavior,
+    discipline: {
+      score: disciplineScore,
+      positives: disciplineScore >= 75 ? ["Goed tempo en voldoende rust tussen trades."] : [],
+      cautions: disciplineScore < 60 ? ["Tempo is (te) hoog of trading is te bursty."] : []
+    },
+    segments: [],
+    sequences: null,
+    baselines30d
+  };
+}
+
+let _coachTeaser = null;
+let _coachTab = null;
+
+function mountCoach(){
+  if(_coachMounted) return;
+  if(!window.Coach) return;
+
+  // Teaser in dashboard (small summary)
+  _coachTeaser = window.Coach.mountTeaser({
+    mountId: "coach-teaser",
+    getInput: () => (_lastCoachInput || {}),
+    getTone: getCoachTone,
+    onOpenCoach: () => showTab("coach")
+  });
+
+  // Full Coach tab
+  _coachTab = window.Coach.mountTab({
+    mountId: "tab-coach",
+    getInput: () => (_lastCoachInput || {}),
+    getTone: getCoachTone,
+    setTone: setCoachTone
+  });
+
+  _coachMounted = true;
+}
+
+let _lastCoachInput = null;
+async function refreshCoachUI(){
+  try{
+    mountCoach();
+    _lastCoachInput = await getCoachInput();
+    if(_coachTeaser && _coachTeaser.rerender) _coachTeaser.rerender();
+    if(_coachTab && _coachTab.rerender) _coachTab.rerender();
+    const elCount = document.getElementById("coachTradeCount");
+    if(elCount) elCount.textContent = `${_lastCoachInput?.behavior?.trades ?? "—"} fills (Kraken Futures)`;
+  }catch(e){
+    const elStatus = document.getElementById("coachSyncStatus");
+    if(elStatus) elStatus.textContent = `Coach error: ${e && e.message ? e.message : e}`;
+  }
+}
+function wireCoachControls(){
+  const btn = document.getElementById("coachSyncBtn");
+  const status = document.getElementById("coachSyncStatus");
+  if(!btn) return;
+  btn.addEventListener("click", async()=>{
+    try{
+      btn.disabled = true;
+      if(status) status.textContent = "Fetching fills…";
+      const res = await syncCoachFromKraken({ maxPages: 5 });
+      if(status) status.textContent = `OK • +${res.total} fills`;
+      await refreshCoachUI();
+    }catch(e){
+      if(status) status.textContent = `Fout: ${e && e.message ? e.message : e}`;
+    }finally{
+      btn.disabled = false;
+    }
+  });
+}
 function aggregateKPIs(trades){
   // NOTE: our dataset can include fee/funding/ledger rows. For KPIs that are "per trade"
   // (count, wins, winrate), only count REAL trades (fills with side+qty+price).
@@ -1733,7 +1966,12 @@ function renderAnalyseCalendar(tradesAll, deposits){
   // Year/month selects
   if(els.calYear && !els.calYear._bound){
     els.calYear.addEventListener("change", ()=>{
-      state.calYear = Number(els.calYear.value);
+      state.cal
+  // coach (Kraken Futures fills)
+  wireCoachControls();
+  // Try refresh coach view based on whatever data is already present
+  await refreshCoachUI();
+Year = Number(els.calYear.value);
       state.calSelected = null;
       if(els.calDetails) els.calDetails.innerHTML='';
       renderAnalyseCalendar(tradesAll, deposits);
