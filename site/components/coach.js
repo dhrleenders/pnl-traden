@@ -24,22 +24,54 @@
       .coach-header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
       .coach-title{margin:0;font-size:18px;font-weight:700}
       .coach-sub{margin-top:4px;font-size:13px;opacity:.7}
-      .coach-card{border:1px solid rgba(0,0,0,.10);border-radius:16px;padding:14px;background:rgba(255,255,255,.85);backdrop-filter:blur(8px)}
-      .coach-card-title{font-size:13px;opacity:.75;margin-bottom:10px}
+      .coach-card{
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:16px;
+  padding:16px;
+  background:linear-gradient(
+    180deg,
+    rgba(20,25,35,0.85),
+    rgba(10,14,22,0.85)
+  );
+  backdrop-filter: blur(10px);
+  color: #e5e7eb;
+}
+      .coach-card-title{
+  font-size:12px;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  color:#9ca3af;
+}
       .coach-chiprow{display:flex;flex-wrap:wrap;gap:8px}
-      .coach-chip{border:1px solid rgba(0,0,0,.12);background:rgba(255,255,255,.9);border-radius:999px;padding:8px 10px;font-size:13px;display:inline-flex;gap:6px;align-items:baseline}
+      .coach-chip{
+  background:rgba(255,255,255,0.08);
+  border:1px solid rgba(255,255,255,0.14);
+  color:#e5e7eb;
+}
       .coach-chip-label{opacity:.65;font-size:12px}
       .coach-chip-value{font-weight:600}
       .coach-grid2{display:grid;grid-template-columns:1fr;gap:12px}
       .coach-grid3{display:grid;grid-template-columns:1fr;gap:12px}
       @media(min-width:880px){.coach-grid2{grid-template-columns:1fr 1fr}.coach-grid3{grid-template-columns:1fr 1fr 1fr}}
       .coach-ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px}
-      .coach-li{font-size:14px;line-height:1.35}
+      .coach-li{
+  font-size:14px;
+  line-height:1.45;
+  color:#e5e7eb;
+}
       .coach-empty{font-size:14px;opacity:.7}
       .coach-tone{display:inline-flex;border:1px solid rgba(0,0,0,.12);border-radius:999px;overflow:hidden;background:rgba(255,255,255,.8)}
       .coach-tone button{padding:8px 10px;font-size:12px;cursor:pointer;border:none;background:transparent}
       .coach-tone button.active{background:rgba(0,0,0,.06)}
-      .coach-teaser{border:1px solid rgba(0,0,0,.10);border-radius:12px;padding:10px 12px;background:rgba(255,255,255,.75);backdrop-filter:blur(6px);display:flex;gap:10px;align-items:center;justify-content:space-between}
+      .coach-teaser{
+  background:linear-gradient(
+    180deg,
+    rgba(20,25,35,0.75),
+    rgba(10,14,22,0.75)
+  );
+  border:1px solid rgba(255,255,255,0.12);
+  color:#e5e7eb;
+}
       .coach-teaser[role="button"]{cursor:pointer}
       .coach-teaser-title{font-size:12px;opacity:.7}
       .coach-teaser-summary{font-size:13px;line-height:1.25}
