@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-01-27T18:40:22.555300Z",
+  "generated_at": "2026-01-27T17:50:51.672303Z",
   "rows": [
     {
       "datetime": "2025-06-21T07:02:58Z",
@@ -291712,7 +291712,7 @@
   },
   "ok": true,
   "exchange": "kraken_futures+blofin",
-  "synced_at": "2026-01-27T18:40:22.554718Z",
+  "synced_at": "2026-01-27T17:50:51.671596Z",
   "sources": {
     "kraken_rows": 19406,
     "blofin_rows": 41
