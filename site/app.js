@@ -596,16 +596,11 @@ async function getTradesForTotalKpi(){
 }
 
 function aggregateKPIs(trades){
-  // NOTE: our dataset can include fee/funding/ledger rows. For KPIs that are "per trade"
-  // (count, wins, winrate), only count REAL trades (fills with side+qty+price).
-  const net = trades.reduce((s,t)=>s+(t.netPnlUsd||0),0);
-  const fees = trades.reduce((s,t)=>s+(t.feesUsd||0),0);
-
-  const real = trades.filter(isRealTradeRow);
-  const wins = real.filter(t=>(t.netPnlUsd||0)>0).length;
-  const count = real.length;
-  const winrate = count ? wins/count : 0;
-
+  const net=trades.reduce((s,t)=>s+(t.netPnlUsd||0),0);
+  const fees=trades.reduce((s,t)=>s+(t.feesUsd||0),0);
+  const wins=trades.filter(t=>(t.netPnlUsd||0)>0).length;
+  const count=trades.length;
+  const winrate=count?wins/count:0;
   return { net, fees, wins, count, winrate };
 }
 function buildEquitySeries(tradesAsc){
